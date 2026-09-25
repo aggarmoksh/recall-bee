@@ -5,7 +5,7 @@ You are the coding agent for **Recall**, a spaced-retrieval tutor built on Bee f
 Your operator is a solo builder on Windows 10/11, git bash, VS Code. He runs a two-surface workflow: an advisor chat handles design and decisions, you handle code and commands. **You do not make design decisions.** When you hit one, stop and ask.
 
 ## Pitch — Recall v3 (locked 2026-09-24, do not drift)
-Bee captures sustained learning speech (lectures, study sessions, family conversations in any language). An agent turns those transcripts into spaced-retrieval questions and delivers them as Bee todo alarms (Watch or iPhone, whichever Bee routes to). The wearer answers by **explaining the answer out loud for 45–60 seconds**, starting with "Recall answer". Bee's ambient capture transcribes it. Recall matches that speech to the dispatched question, an LLM grades the explanation against the source transcript, and SM-2 reschedules. A target-language flag lets the same loop serve students and bilingual families.
+Bee captures sustained learning speech (lectures, study sessions, family conversations in any language). An agent turns those transcripts into spaced-retrieval questions and delivers them as Bee todo alarms (Watch or iPhone, whichever Bee routes to). The wearer answers by **explaining the answer out loud** (target length under review: 15–20s if the Phase 3 short-answer test passes, else 45–60s). Saying "Recall answer" first is optional. Bee's ambient capture transcribes it. Recall matches that speech to the dispatched question, an LLM grades the explanation against the source transcript, and SM-2 reschedules. A target-language flag lets the same loop serve students and bilingual families.
 
 Fallback grading path (only if the Phase 2 explain-back gate fails): self-grade by ticking the todo on iPhone, detected by polling REST for `completed: true`.
 
@@ -79,6 +79,7 @@ At the end of every phase print exactly `Phase N complete. Consult advisor with:
 - Occasional duplicate notification observed. Log if it recurs.
 
 **Schema decisions (advisor, 2026-09-24)**
+- Trigger phrase is OPTIONAL (2026-09-25). Operator forgot it 3/10 times in the gate. Matching is by time window after the dispatch's delivery; the trigger only raises confidence. Grader must return an explicit "not_an_answer" verdict for off-topic speech in the window (scored as a miss). Answer window closes 35s after the last utterance in the window (max observed tail latency 25.2s).
 - One graded Answer per Dispatch (`Answer.dispatch_id` unique). `raw_text` = concatenated utterances in the answer window; `utterance_ids` = JSON list for evidence. Grade once when the window closes.
 - `Session` table derived from `spoken_at` gaps > 10 min. Questions reference `session_id` + `source_start`/`source_end`. `conversation_id` is a coarse pointer only.
 

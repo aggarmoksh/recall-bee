@@ -1,3 +1,5 @@
+**Resolved 2026-09-24 by advisor, implemented in Phase 2 Step 1** -- see AGENT.md "Schema decisions": Answer.dispatch_id is now unique (one graded Answer per Dispatch), Answer.utterance_id became Answer.utterance_ids (JSON list), and a new Session model (derived from spoken_at gaps > 10 min) replaces Conversation as the session boundary, with Question gaining session_id/source_start/source_end. Kept below as a historical record of the reasoning.
+
 # Phase 1 — schema decisions flagged for the advisor
 
 Per the Phase 1 brief: these are schema choices that affect matching or grading. I picked the simplest option for each so Phase 1 has a working skeleton, but none of these are locked -- flagging them here rather than deciding silently.

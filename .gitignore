@@ -28,3 +28,6 @@ phase0/01_status.txt
 build/
 dist/
 *.pyc
+
+# Raw evidence with speech/transcript content -- never committed (AGENT.md privacy rule)
+/private/
