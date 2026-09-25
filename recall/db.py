@@ -64,6 +64,7 @@ class Question(SQLModel, table=True):
     source_end: datetime | None = None
     text: str
     expected_answer: str
+    rubric: list[str] = Field(default_factory=list, sa_column=Column(JSON))  # 2-4 key points, Phase 3
     source_excerpt: str
     topic: str | None = None
     language: str | None = None  # Phase 7 target-language flag

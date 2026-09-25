@@ -1,11 +1,21 @@
-"""Prototype answer matcher.
+"""Production answer matcher (updated 2026-09-25 -- see AGENT.md "Schema
+decisions"): trigger phrase forgotten 3/10 times in the Phase 2 gate, so it
+is now a confidence flag only, never a gate on matching.
 
-For a dispatched question's answer window, collect the utterances that fall
-inside it, fuzzy-detect the "Recall answer" trigger phrase (STT mangles odd
-short phrases -- AGENT.md pitfall), and join the text into one raw answer.
+The answer window starts at the dispatch's `alarm_at` (not a spoken
+speech-start/end -- those only exist as gate instrumentation, not in
+production) and stays open, accepting utterances, as long as each new one
+arrives within `tail_close_s` of the previous one already in the window.
+Before the first utterance arrives there is no tail-close constraint (the
+wearer may take a while to notice the prompt and start answering), so the
+window effectively stays open until the hard cap in that case. The whole
+window is hard-capped at `alarm_at + hard_cap_s` regardless.
 
-The gate script (phase2/explain_gate.py) uses Enter-press timestamps for the
-window; production will use alarm_at-derived windows instead, per the brief.
+The matcher does not attempt topical relevance filtering -- an unrelated
+utterance that happens to fall in the window is still included in
+raw_text. Deciding whether captured speech is actually an answer (vs.
+off-topic chatter) is the grader's job in Phase 5 (the "not_an_answer"
+verdict), not the matcher's.
 """
 
 import difflib
@@ -13,7 +23,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 TRIGGER_PHRASE = "recall answer"
-DEFAULT_WINDOW_PAD_S = 15
+DEFAULT_TAIL_CLOSE_S = 35.0
+DEFAULT_HARD_CAP_S = 300.0  # 5 minutes
 DEFAULT_FUZZY_THRESHOLD = 0.6
 
 
@@ -28,7 +39,7 @@ class Utterance:
 class MatchResult:
     utterances: list[Utterance]
     raw_text: str
-    trigger_found: bool
+    trigger_found: bool  # confidence flag only -- never gates matching
 
 
 def _normalize(text: str) -> str:
@@ -62,19 +73,32 @@ def fuzzy_contains_trigger(
 
 def match_answer_window(
     utterances: list[Utterance],
-    speech_start: datetime,
-    speech_end: datetime,
-    pad_seconds: float = DEFAULT_WINDOW_PAD_S,
+    alarm_at: datetime,
+    tail_close_s: float = DEFAULT_TAIL_CLOSE_S,
+    hard_cap_s: float = DEFAULT_HARD_CAP_S,
 ) -> MatchResult:
-    """Select utterances within [speech_start - pad, speech_end + pad],
-    join their text in spoken_at order, and check for the trigger phrase."""
-    window_start = speech_start - timedelta(seconds=pad_seconds)
-    window_end = speech_end + timedelta(seconds=pad_seconds)
+    """Select the utterances that belong to a dispatched question's answer.
 
-    in_window = sorted(
-        (u for u in utterances if window_start <= u.spoken_at <= window_end),
+    Window: opens at alarm_at, hard-capped at alarm_at + hard_cap_s. Within
+    that range, keeps including utterances as long as consecutive ones are
+    no more than tail_close_s apart; the first gap larger than that closes
+    the window (everything after is excluded, even if still under the hard
+    cap).
+    """
+    hard_cap_at = alarm_at + timedelta(seconds=hard_cap_s)
+    candidates = sorted(
+        (u for u in utterances if alarm_at <= u.spoken_at <= hard_cap_at),
         key=lambda u: u.spoken_at,
     )
+
+    in_window: list[Utterance] = []
+    last_time: datetime | None = None
+    for u in candidates:
+        if last_time is not None and (u.spoken_at - last_time) > timedelta(seconds=tail_close_s):
+            break
+        in_window.append(u)
+        last_time = u.spoken_at
+
     raw_text = " ".join(u.text for u in in_window)
     trigger_found = any(fuzzy_contains_trigger(u.text) for u in in_window)
 

@@ -37,7 +37,6 @@ RESULTS_MD = HERE / "explain_gate_results.md"
 START_OFFSET_S = 120  # first alarm 2 min from now
 SPACING_S = 240  # 4 min apart
 TAIL_BUFFER_S = 600  # after last speech_end, wait 10 min before reconciling
-WINDOW_PAD_S = 15
 
 PRIVATE_DIR.mkdir(exist_ok=True)
 
@@ -193,24 +192,25 @@ def main() -> None:
     utterance_pool = list(all_utterances.values())
     print(f"[gate] utterance pool: {len(live_utterances)} live + {len(utterance_pool) - len(live_utterances)} reconciled = {len(utterance_pool)} total")
 
-    # Match each trial's answer window
+    # Match each trial's answer window. Production-accurate as of Phase 3:
+    # the matcher windows from alarm_at (35s tail-close, 5min hard cap), not
+    # from the gate's own speech_start/speech_end Enter-press instrumentation
+    # -- those are kept only as diagnostic ground truth for the latency
+    # columns below, not fed into the matcher itself.
     for i in sorted(trials):
         t = trials[i]
-        if "speech_start_wall" not in t or "speech_end_wall" not in t:
-            t["match"] = None
-            continue
-        speech_start = datetime.fromtimestamp(t["speech_start_wall"], tz=UTC)
-        speech_end = datetime.fromtimestamp(t["speech_end_wall"], tz=UTC)
-        result = match_answer_window(utterance_pool, speech_start, speech_end, pad_seconds=WINDOW_PAD_S)
+        alarm_at = datetime.fromtimestamp(t["alarm_at_epoch"], tz=UTC)
+        result = match_answer_window(utterance_pool, alarm_at=alarm_at)
         recv_times = [live_recv_by_id[u.id] for u in result.utterances if u.id in live_recv_by_id]
+        speech_end_wall = t.get("speech_end_wall")
         t["match"] = {
             "captured": len(result.utterances) > 0,
             "num_utterances": len(result.utterances),
             "trigger_found": result.trigger_found,
             "raw_text": result.raw_text,
             "utterance_ids": [u.id for u in result.utterances],
-            "first_arrival_latency_s": (min(recv_times) - t["speech_end_wall"]) if recv_times else None,
-            "last_arrival_latency_s": (max(recv_times) - t["speech_end_wall"]) if recv_times else None,
+            "first_arrival_latency_s": (min(recv_times) - speech_end_wall) if (recv_times and speech_end_wall) else None,
+            "last_arrival_latency_s": (max(recv_times) - speech_end_wall) if (recv_times and speech_end_wall) else None,
             "any_reconciled_only": len(recv_times) < len(result.utterances),
         }
 

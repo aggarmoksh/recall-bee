@@ -1,0 +1,3 @@
+# Manual override: topics/phrases never to quiz on, one per line.
+# Blank and comment (#) lines are ignored. Prefer this over prompt-engineering
+# hacks (AGENT.md: "manual override lists beat algorithmic perfection").

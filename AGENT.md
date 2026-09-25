@@ -5,7 +5,7 @@ You are the coding agent for **Recall**, a spaced-retrieval tutor built on Bee f
 Your operator is a solo builder on Windows 10/11, git bash, VS Code. He runs a two-surface workflow: an advisor chat handles design and decisions, you handle code and commands. **You do not make design decisions.** When you hit one, stop and ask.
 
 ## Pitch — Recall v3 (locked 2026-09-24, do not drift)
-Bee captures sustained learning speech (lectures, study sessions, family conversations in any language). An agent turns those transcripts into spaced-retrieval questions and delivers them as Bee todo alarms (Watch or iPhone, whichever Bee routes to). The wearer answers by **explaining the answer out loud** (target length under review: 15–20s if the Phase 3 short-answer test passes, else 45–60s). Saying "Recall answer" first is optional. Bee's ambient capture transcribes it. Recall matches that speech to the dispatched question, an LLM grades the explanation against the source transcript, and SM-2 reschedules. A target-language flag lets the same loop serve students and bilingual families.
+Bee captures sustained learning speech (lectures, study sessions, family conversations in any language). An agent turns those transcripts into spaced-retrieval questions and delivers them as Bee todo alarms (Watch or iPhone, whichever Bee routes to). The wearer answers by **explaining the answer out loud in 15–20 seconds** (locked after 5/5 capture in Phase 3). Saying "Recall answer" first is optional. After grading, a feedback todo lands on the wrist ("Recall ✓ 3/4 — missed: X"). Bee's ambient capture transcribes it. Recall matches that speech to the dispatched question, an LLM grades the explanation against the source transcript, and SM-2 reschedules. A target-language flag lets the same loop serve students and bilingual families.
 
 Fallback grading path (only if the Phase 2 explain-back gate fails): self-grade by ticking the todo on iPhone, detected by polling REST for `completed: true`.
 
@@ -47,8 +47,8 @@ At the end of every phase print exactly `Phase N complete. Consult advisor with:
 - **Phase 1 — Repo bootstrap + Bee client module + backend skeleton.**
 - **Phase 2 — Privacy scrub + schema update + explain-back reliability gate (10 trials, pass = 8/10) + ingestion.**
 - **Phase 3 — Question generator** (transcript → questions with rubric + source excerpt).
-- **Phase 4 — Dispatch loop** (SM-2 picks due question → todo with alarm_at → mark dispatched, idempotent).
-- **Phase 5 — Answer matching + grading** (utterances after alarm with trigger phrase → grade vs rubric/source → SM-2 update).
+- **Phase 4 (merged 4+5) — Full loop daemon:** session classification + auto/pending approval, dispatch policy, grading, feedback todo, todo cleanup, `python -m recall.run`. Mid-phase checkpoint after grading unit tests.
+- **Phase 5 — 5-day dogfood** (operator uses Recall on real learning material; kill criterion: ignoring >50% of prompts by day 3 → rethink cadence/length before polish).
 - **Phase 6 — Dashboard** (due today, mastery by topic, question with source excerpt, answer transcript + grade + feedback).
 - **Phase 7 — Target-language flag.**
 - **Phase 8 — Demo polish, friction log final, video script, Devpost draft.**
@@ -82,6 +82,14 @@ At the end of every phase print exactly `Phase N complete. Consult advisor with:
 - Trigger phrase is OPTIONAL (2026-09-25). Operator forgot it 3/10 times in the gate. Matching is by time window after the dispatch's delivery; the trigger only raises confidence. Grader must return an explicit "not_an_answer" verdict for off-topic speech in the window (scored as a miss). Answer window closes 35s after the last utterance in the window (max observed tail latency 25.2s).
 - One graded Answer per Dispatch (`Answer.dispatch_id` unique). `raw_text` = concatenated utterances in the answer window; `utterance_ids` = JSON list for evidence. Grade once when the window closes.
 - `Session` table derived from `spoken_at` gaps > 10 min. Questions reference `session_id` + `source_start`/`source_end`. `conversation_id` is a coarse pointer only.
+
+**Loop policy (advisor, 2026-09-25)**
+- Session types from generator: `lecture_study` (auto-approve questions), `substantive_discussion` (questions pending; operator approves via CLI), `casual`/`personal` (no questions).
+- Dispatch: max 6/day, quiet hours 22:00–08:00 local, min 45 min between dispatches, at most ONE open dispatch at a time.
+- Scheduling: first review ~2h after session end, second next day, then SM-2.
+- Grade verdicts: correct→5 (all rubric points) / 4 (minor gap), partial→3, incorrect→1, not_an_answer→0, no_answer→0.
+- After grading: delete the question todo, post a feedback todo with alarm_at=now. Delete Recall feedback todos older than 12h. Only ever delete todos Recall created (tracked by bee_todo_id); never touch the user's own todos.
+- LLM: gemini-2.5-flash (3.x flash returned persistent 503s on 2026-09-25).
 
 **Privacy (hard rule, revised 2026-09-25)**
 - Standard is anonymity/unidentifiability, not "no raw text at all": a transcript, utterance, or Bee payload may be committed as-is if it cannot be tied to a specific identifiable person (no real names, no other uniquely identifying detail). Already-public third-party content (e.g. a YouTube video's transcribed speech) is fine to keep verbatim -- reproduction/copyright is a different concern from privacy and isn't gated by this rule.
