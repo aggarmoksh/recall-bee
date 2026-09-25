@@ -1,0 +1,7 @@
+[smoke] starting bee proxy on port 8787...
+[smoke] proxy ready at http://127.0.0.1:8787
+[smoke] get_me() OK -- keys: ['first_name', 'id', 'last_name', 'timezone'] (values redacted)
+[smoke] list_conversations() OK -- 4 conversation(s) returned
+[smoke] create_todo() OK -- id=28890610, alarm_at=2026-09-24T22:31:21-07:00
+[smoke] proxy stopped, checking for orphans...
+[smoke] OK: no orphaned bee processes.

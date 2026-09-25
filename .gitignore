@@ -1,0 +1,30 @@
+.env
+.env.local
+recall.db
+recall.db-*
+logs/
+.venv/
+node_modules/
+__pycache__/
+.pytest_cache/
+*.pem
+*.crt
+.next/
+.DS_Store
+.claude/
+bee-proxy-ca.*
+*.bee-ca.*
+
+# Phase 0 files with real name/token content (operator-approved exclusions)
+phase0/01_me.json
+phase0/01_status.txt
+
+# Pre-existing private research/strategy notes (operator-approved exclusion)
+/r1.md
+/compass_artifact_wf-98c42418-67f7-508e-979e-4d0621cbd0c6_text_markdown.md
+
+# Python
+*.egg-info/
+build/
+dist/
+*.pyc
