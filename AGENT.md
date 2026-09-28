@@ -17,7 +17,7 @@ Fallback grading path (only if the Phase 2 explain-back gate fails): self-grade 
 - **Spaced repetition:** SM-2, hand-implemented.
 - **LLM:** behind a small provider interface (`recall/llm/`) with one method per job (generate_questions, grade_answer). Default provider: **Google Gemini** (`google-genai` SDK, current Flash model, key `GEMINI_API_KEY` in `.env`). Anthropic adapter optional later. Swapping must be a config change plus one adapter file, never a rewrite. Structured JSON output only.
 - **AWS:** boto3 for Bedrock. Credentials via `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` in `.env` (IAM user `recall-dev`, never root). Never log or commit keys.
-- **Frontend:** Next.js 15 (App Router) + TypeScript + Tailwind v4. No component library.
+- **Frontend:** Next.js 16 (App Router, revised 2026-09-28 -- `create-next-app@latest` now installs 16.3.6; App Router APIs used here are unchanged from 15) + TypeScript + Tailwind v4. No component library.
 - **Auth:** none. Single-user local app.
 - **Deploy:** local only.
 - **License:** MIT (Open Source mini).

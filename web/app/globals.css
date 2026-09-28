@@ -1,0 +1,166 @@
+@import "tailwindcss";
+
+:root {
+  --background: #faf9f7;
+  --surface: #ffffff;
+  --foreground: #1c1917;
+  --muted: #6b6560;
+  --border: #ece8e3;
+  --accent: #7c5cff;
+  --accent-foreground: #ffffff;
+  --good: #16a34a;
+  --bad: #dc2626;
+
+  /* Bee-DNA content-block colors -- warm, saturated, used as full card
+     backgrounds (not just accents) the way Bee's summary/key-takeaways
+     cards work. */
+  --yellow: #ffd84d;
+  --yellow-foreground: #1c1917;
+  --lavender: #e4defb;
+  --lavender-foreground: #1c1917;
+
+  --gradient-hero: linear-gradient(115deg, #ffd84d 0%, #ffb85c 30%, #d9a9ff 65%, #b98bff 100%);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-border: var(--border);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-good: var(--good);
+  --color-bad: var(--bad);
+  --color-yellow: var(--yellow);
+  --color-yellow-foreground: var(--yellow-foreground);
+  --color-lavender: var(--lavender);
+  --color-lavender-foreground: var(--lavender-foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #121011;
+    --surface: #1d1a1b;
+    --foreground: #f5f1ee;
+    --muted: #a89f98;
+    --border: #322d2e;
+    --accent: #a78bfa;
+    --accent-foreground: #171123;
+    --good: #4ade80;
+    --bad: #f87171;
+    --yellow: #e8bf3f;
+    --yellow-foreground: #171123;
+    --lavender: #3a3350;
+    --lavender-foreground: #f0ecff;
+    --gradient-hero: linear-gradient(115deg, #b8912f 0%, #a3612f 30%, #5b3f80 65%, #3d2a66 100%);
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), Arial, Helvetica, sans-serif;
+  font-size: 16px;
+  overflow-x: hidden;
+}
+
+.bee-hero {
+  background: var(--gradient-hero);
+  position: relative;
+  overflow: hidden;
+}
+
+/* --- motion language: fluid, springy, alive (bee.computer reference) --- */
+
+:root {
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-soft: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.bounce {
+  transition: transform 0.35s var(--ease-spring), box-shadow 0.35s var(--ease-soft);
+}
+.bounce:hover {
+  transform: translateY(-3px) scale(1.015);
+}
+.bounce:active {
+  transform: scale(0.97);
+  transition-duration: 0.12s;
+}
+
+.press {
+  transition: transform 0.2s var(--ease-spring), opacity 0.2s ease;
+}
+.press:active {
+  transform: scale(0.95);
+}
+
+@keyframes float-blob {
+  0%, 100% {
+    transform: translate(0, 0) scale(1);
+  }
+  33% {
+    transform: translate(3%, -4%) scale(1.05);
+  }
+  66% {
+    transform: translate(-2%, 3%) scale(0.97);
+  }
+}
+
+.blob {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(50px);
+  opacity: 0.55;
+  animation: float-blob 14s var(--ease-soft) infinite;
+  pointer-events: none;
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.reveal {
+  opacity: 0;
+}
+.reveal.is-visible {
+  animation: rise-in 0.6s var(--ease-soft) forwards;
+}
+
+@keyframes pop-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  70% {
+    opacity: 1;
+    transform: scale(1.03);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.pop {
+  animation: pop-in 0.5s var(--ease-spring) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bounce, .press, .blob, .reveal, .pop {
+    animation: none !important;
+    transition: none !important;
+  }
+  .reveal {
+    opacity: 1;
+  }
+}
