@@ -8,3 +8,4 @@ pytest
 pytest-asyncio
 tzdata
 google-genai
+boto3

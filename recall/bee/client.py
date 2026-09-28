@@ -121,3 +121,10 @@ class BeeClient:
 
     def get_todo(self, todo_id: int) -> dict:
         return self._request("GET", f"/v1/todos/{todo_id}")
+
+    def delete_todo(self, todo_id: int) -> dict:
+        """Verified endpoint (Phase 4B): DELETE /v1/todos/{id} -> 200
+        {"success": true, "timezone": ...}. Send no body/Content-Type --
+        a Content-Type header on this bodyless request triggers
+        FST_ERR_CTP_EMPTY_JSON_BODY."""
+        return self._request("DELETE", f"/v1/todos/{todo_id}")

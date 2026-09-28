@@ -1,4 +1,4 @@
-"""Production answer matcher (updated 2026-09-25 -- see AGENT.md "Schema
+"""Production answer matcher (updated 2026-09-28 -- see AGENT.md "Schema
 decisions"): trigger phrase forgotten 3/10 times in the Phase 2 gate, so it
 is now a confidence flag only, never a gate on matching.
 
@@ -10,6 +10,13 @@ Before the first utterance arrives there is no tail-close constraint (the
 wearer may take a while to notice the prompt and start answering), so the
 window effectively stays open until the hard cap in that case. The whole
 window is hard-capped at `alarm_at + hard_cap_s` regardless.
+
+Tail-close raised from 35s to 60s in Phase 4C: a real Phase 4B live-test
+answer had a 37s mid-answer thinking-pause (normal for a longer conceptual
+"explain this" question) that tripped the old 35s threshold and silently
+truncated the answer to just its first sentence before the substantive
+content arrived. 35s was tuned against Phase 2/3's shorter, more clipped
+test answers and didn't hold up on a real explain-back question.
 
 The matcher does not attempt topical relevance filtering -- an unrelated
 utterance that happens to fall in the window is still included in
@@ -23,7 +30,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 TRIGGER_PHRASE = "recall answer"
-DEFAULT_TAIL_CLOSE_S = 35.0
+DEFAULT_TAIL_CLOSE_S = 60.0
 DEFAULT_HARD_CAP_S = 300.0  # 5 minutes
 DEFAULT_FUZZY_THRESHOLD = 0.6
 

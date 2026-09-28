@@ -65,23 +65,23 @@ def test_match_with_no_trigger_phrase_still_matches():
     assert "Sabine" in result.raw_text
 
 
-def test_window_closes_35s_after_last_utterance_by_default():
+def test_window_closes_60s_after_last_utterance_by_default():
     alarm_at = _dt(0)
     utterances = [
         Utterance(id=1, text="first part of the answer", spoken_at=_dt(5)),
-        # gap of 40s from the previous utterance -- exceeds the 35s tail-close
-        Utterance(id=2, text="unrelated speech long after", spoken_at=_dt(45)),
+        # gap of 65s from the previous utterance -- exceeds the 60s tail-close
+        Utterance(id=2, text="unrelated speech long after", spoken_at=_dt(70)),
     ]
     result = match_answer_window(utterances, alarm_at=alarm_at)
     assert [u.id for u in result.utterances] == [1]
     assert "unrelated speech long after" not in result.raw_text
 
 
-def test_window_stays_open_across_gaps_under_35s():
+def test_window_stays_open_across_gaps_under_60s():
     alarm_at = _dt(0)
     utterances = [
         Utterance(id=1, text="first part", spoken_at=_dt(5)),
-        Utterance(id=2, text="second part after a pause", spoken_at=_dt(38)),  # 33s gap, under 35s
+        Utterance(id=2, text="second part after a pause", spoken_at=_dt(60)),  # 55s gap, under 60s
     ]
     result = match_answer_window(utterances, alarm_at=alarm_at)
     assert len(result.utterances) == 2
@@ -89,7 +89,7 @@ def test_window_stays_open_across_gaps_under_35s():
 
 def test_no_tail_close_constraint_before_first_utterance():
     """The wearer may take a while to notice the prompt and start
-    answering -- only gaps BETWEEN utterances are subject to the 35s
+    answering -- only gaps BETWEEN utterances are subject to the 60s
     tail-close; the wait for the first utterance is not."""
     alarm_at = _dt(0)
     utterances = [Utterance(id=1, text="a delayed answer", spoken_at=_dt(120))]  # 2 min after alarm_at

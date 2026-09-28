@@ -31,3 +31,10 @@ dist/
 
 # Raw evidence with speech/transcript content -- never committed (AGENT.md privacy rule)
 /private/
+
+# Local editor config / accidentally-exposed credentials (Phase 4C)
+opencode.json
+bedrock.txt
+*.key
+*credentials*
+*secret*

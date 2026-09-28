@@ -7,7 +7,7 @@ from sqlmodel import SQLModel, create_engine, select
 
 from recall.bee.client import BeeClient
 from recall.db import Conversation, Session, Utterance
-from recall.ingest import poll_once, rebuild_sessions
+from recall.ingest import _to_dt, poll_once, rebuild_sessions, upsert_conversation, upsert_utterance
 
 BASE_TIME = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 
@@ -141,6 +141,92 @@ def test_rebuild_sessions_never_gates_on_conversation_state(client_and_db):
         assert conv.state == "CAPTURING"
         utterances = db.exec(select(Utterance).where(Utterance.conversation_id == 1001)).all()
         assert len(utterances) == 2
+
+
+def test_rebuild_sessions_preserves_classification_on_existing_session(client_and_db):
+    """A full delete-and-recreate would wipe Phase 4A classification/approval
+    state on every re-ingest -- must be preserved when re-running rebuild."""
+    _, engine = client_and_db
+    with DBSession(engine) as db:
+        db.add(Conversation(id=1))
+        db.add_all(
+            [
+                Utterance(id=1, conversation_id=1, conversation_uuid="x", text="a", spoken_at=BASE_TIME),
+                Utterance(id=2, conversation_id=1, conversation_uuid="x", text="b", spoken_at=BASE_TIME + timedelta(minutes=3)),
+            ]
+        )
+        db.commit()
+        rebuild_sessions(db)
+
+        sessions = db.exec(select(Session)).all()
+        assert len(sessions) == 1
+        sessions[0].session_type = "lecture_study"
+        sessions[0].session_type_reason = "structured educational content"
+        sessions[0].approval_status = "approved"
+        db.add(sessions[0])
+        db.commit()
+
+    # A new utterance extends the same session (same start_at) -- rebuild
+    # again and confirm classification survives, while end_at updates.
+    with DBSession(engine) as db:
+        db.add(Utterance(id=3, conversation_id=1, conversation_uuid="x", text="c", spoken_at=BASE_TIME + timedelta(minutes=6)))
+        db.commit()
+        rebuild_sessions(db)
+
+        sessions = db.exec(select(Session)).all()
+        assert len(sessions) == 1
+        assert sessions[0].session_type == "lecture_study"
+        assert sessions[0].session_type_reason == "structured educational content"
+        assert sessions[0].approval_status == "approved"
+        assert sessions[0].end_at == BASE_TIME + timedelta(minutes=6)
+
+
+def test_to_dt_accepts_epoch_ms_and_iso_string():
+    """REST poll responses use epoch-ms ints; the live stream's
+    new-conversation/update-conversation events use ISO8601 strings instead
+    for the same fields (start_time/end_time) -- this crashed
+    consume_stream_live's upsert_conversation call in a live Step 5 test
+    with `TypeError: unsupported operand type(s) for /: 'str' and 'int'`."""
+    assert _to_dt(_ms(BASE_TIME)) == BASE_TIME
+    assert _to_dt("2026-01-01T12:00:00Z") == BASE_TIME
+    assert _to_dt("2026-01-01T12:00:00+00:00") == BASE_TIME
+    assert _to_dt(None) is None
+
+
+def test_upsert_conversation_handles_live_stream_iso_string_payload(client_and_db):
+    """Reproduces the exact live-stream conversation payload shape (ISO
+    string start_time/end_time, no updated_at) that crashed
+    consume_stream_live in the Phase 4B Step 5 live test."""
+    _, engine = client_and_db
+    with DBSession(engine) as db:
+        conv = upsert_conversation(
+            db,
+            {
+                "id": 2001,
+                "conversation_uuid": "uuid-2001",
+                "start_time": "2026-01-01T12:00:00Z",
+                "end_time": "2026-01-01T12:10:00Z",
+                "short_summary": None,
+                "state": "CAPTURING",
+            },
+        )
+        db.commit()
+        assert conv.start_time == BASE_TIME
+        assert conv.end_time == BASE_TIME + timedelta(minutes=10)
+
+
+def test_upsert_utterance_handles_iso_string_spoken_at(client_and_db):
+    _, engine = client_and_db
+    with DBSession(engine) as db:
+        db.add(Conversation(id=2001))
+        db.commit()
+        inserted = upsert_utterance(
+            db, 2001, "uuid-2001", {"id": 9001, "text": "live-stream utterance", "spoken_at": "2026-01-01T12:00:00Z"}
+        )
+        db.commit()
+        assert inserted is True
+        u = db.get(Utterance, 9001)
+        assert u.spoken_at == BASE_TIME
 
 
 def test_rebuild_sessions_directly_with_synthetic_utterances(client_and_db):

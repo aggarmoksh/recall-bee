@@ -1,0 +1,15 @@
+# Manual override: session ids to NEVER generate questions from.
+# Blank and comment (#) lines are ignored. Prefer this over prompt-engineering
+# hacks (AGENT.md: "manual override lists beat algorithmic perfection").
+#
+# Roman-history trial material retired 2026-09-27 so the 5-day dogfood trial
+# starts fresh on AI/ML interview-prep content (AGENT.md Loop policy).
+# Sessions 7, 8, 10 are also excluded under the NO-SELF-FEEDING rule
+# (2026-09-26): they are the operator's own spoken EXPLAIN-BACK ANSWERS from
+# earlier testing (reciting the lecture's facts back), not new source
+# material -- generating questions from them would feed the model its own
+# answers back as "new" content.
+5   # original Roman-history lecture (Phase 0.9/Phase 3 source material)
+7   # spoken answers, Phase 0.9 explain-back trial 1 (Roman history)
+8   # spoken answers, Phase 3 short-answer test (Roman history)
+10  # spoken answers, Phase 3 short-answer test continued (Roman history)

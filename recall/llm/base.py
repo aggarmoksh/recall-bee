@@ -9,7 +9,22 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Literal
 
-GradeVerdict = Literal["correct", "incorrect", "not_an_answer"]
+GradeVerdict = Literal[
+    "correct", "partial", "incorrect", "not_an_answer", "no_answer", "incomplete_capture", "code_truncated"
+]
+# quality mapping (AGENT.md "Loop policy"): correct->5 (all rubric points) or
+# 4 (minor gap), partial->3, incorrect->1, not_an_answer->0, no_answer->0,
+# incomplete_capture->no SM-2 update at all (re-dispatch in ~2h instead).
+# "no_answer" (empty answer window) and "incomplete_capture" (<12 words
+# captured and the LLM's own verdict wasn't already "correct") are both
+# handled in code by recall/grading.py -- the LLM only ever returns the
+# other four verdicts itself.
+# "code_truncated" is never assigned automatically by anything -- it's a
+# manual correction tag (Phase 4C) for an answer whose real content was
+# silently cut by a matcher/tooling bug (e.g. the pre-Phase-4C 35s tail-close
+# truncating a genuine answer) rather than a real grading outcome. Excluded
+# from grader-agreement stats in recall/review.py.
+SessionType = Literal["lecture_study", "substantive_discussion", "casual", "personal"]
 
 
 @dataclass(frozen=True)
@@ -23,22 +38,34 @@ class GeneratedQuestion:
 
 
 @dataclass(frozen=True)
+class QuestionGenerationResult:
+    session_type: SessionType
+    session_type_reason: str  # one line
+    questions: list[GeneratedQuestion]
+
+
+@dataclass(frozen=True)
 class GradeResult:
     verdict: GradeVerdict
     # "not_an_answer" is distinct from "incorrect": off-topic/unrelated
     # speech in the answer window, not a wrong attempt at the question
     # (AGENT.md schema decision, 2026-09-25). Both score as an SM-2 miss.
+    rubric_points_hit: list[str]
     quality: int  # SM-2 quality scale, 0-5
-    feedback: str
+    feedback: str  # <=12 words -- fits a wrist notification
 
 
 class LLMProvider(ABC):
     @abstractmethod
     def generate_questions(
         self, transcript: str, n: int, target_language: str | None = None
-    ) -> list[GeneratedQuestion]:
-        """Given a transcript, produce n retrieval questions with expected
-        answers, grading rubrics, and the source excerpt each one came from.
+    ) -> QuestionGenerationResult:
+        """Classify the session (lecture_study / substantive_discussion /
+        casual / personal, with a one-line reason) and, given a transcript,
+        produce up to n retrieval questions with expected answers, grading
+        rubrics, and the source excerpt each one came from. Fewer than n
+        (including zero) is correct when the transcript doesn't support
+        that many distinct, substantive, ungarbled questions.
 
         target_language: if set, questions are generated in this language
         instead of the transcript's dominant language (Phase 7 groundwork;
@@ -47,6 +74,16 @@ class LLMProvider(ABC):
 
     @abstractmethod
     def grade_answer(self, question: GeneratedQuestion, spoken_answer: str) -> GradeResult:
-        """Grade a spoken explain-back answer against the question's rubric
-        and source excerpt."""
+        """Grade a spoken explain-back answer (STT-noisy, possibly
+        code-switched) against the question's rubric, expected answer, and
+        source excerpt. Never called for an empty answer window -- that's
+        handled in code as "no_answer" without an LLM call."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def shorten_question(self, text: str, max_chars: int) -> str:
+        """Rewrite `text` to fit within max_chars characters while
+        preserving its meaning. One-shot repair pass for a generated
+        question that came back over the length limit (Phase 4C: questions
+        must fit a Bee todo notification, <=100 chars)."""
         raise NotImplementedError

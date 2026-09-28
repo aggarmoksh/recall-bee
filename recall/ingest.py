@@ -33,18 +33,17 @@ SESSION_GAP_MINUTES = 10
 POLL_INTERVAL_S = 60
 
 
-def _to_dt(ms: int | float | None) -> datetime | None:
-    if ms is None:
+def _to_dt(value: int | float | str | None) -> datetime | None:
+    """Bee's REST poll responses use epoch-ms ints; the live stream's
+    conversation/utterance payloads use ISO8601 strings instead (same
+    REST-vs-stream field-format split already seen with todo events'
+    alarmAt) -- accept either so a stream event's start_time/end_time/
+    spoken_at doesn't crash upsert_conversation/upsert_utterance."""
+    if value is None:
         return None
-    return datetime.fromtimestamp(ms / 1000, tz=UTC)
-
-
-def _parse_spoken_at(value) -> datetime | None:
     if isinstance(value, str):
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    if isinstance(value, (int, float)):
-        return _to_dt(value)
-    return None
+    return datetime.fromtimestamp(value / 1000, tz=UTC)
 
 
 def upsert_conversation(db, data: dict) -> Conversation:
@@ -65,7 +64,7 @@ def upsert_utterance(db, conversation_id: int, conversation_uuid: str, u: dict) 
     as immutable once transcribed, so an existing id is left untouched."""
     if db.get(Utterance, u.get("id")) is not None:
         return False
-    spoken_at = _parse_spoken_at(u.get("spoken_at"))
+    spoken_at = _to_dt(u.get("spoken_at"))
     if u.get("id") is None or spoken_at is None:
         return False
     db.add(
@@ -130,17 +129,17 @@ def poll_once(client: BeeClient) -> dict:
 
 
 def rebuild_sessions(db) -> int:
-    """Full rebuild of Session rows from spoken_at gaps > SESSION_GAP_MINUTES.
+    """Incremental rebuild of Session rows from spoken_at gaps > SESSION_GAP_MINUTES.
 
-    Simple/correct for Phase 2 scale; a real incremental version (that
-    preserves Session.id stability across rebuilds) can come later if
-    something starts depending on stable session identity across runs --
-    nothing does yet (Phase 3's question generator hasn't been built).
+    Matches groups to existing Session rows by start_at and updates
+    end_at/conversation_ids in place -- a full delete-and-recreate (the
+    Phase 2 version) would wipe out Phase 4A's session_type/approval_status
+    classification on every re-ingest. A classified session (session_type
+    is not None) is NEVER deleted, even if its group no longer matches
+    exactly; only still-unclassified stale sessions get cleaned up.
     """
     utterances = db.exec(select(Utterance).order_by(Utterance.spoken_at)).all()
-    for s in db.exec(select(Session)).all():
-        db.delete(s)
-    db.commit()
+    existing_by_start = {s.start_at: s for s in db.exec(select(Session)).all()}
 
     if not utterances:
         return 0
@@ -152,9 +151,25 @@ def rebuild_sessions(db) -> int:
             groups.append([])
         groups[-1].append(u)
 
+    matched_starts = set()
     for group in groups:
+        start_at = group[0].spoken_at
+        end_at = group[-1].spoken_at
         conv_ids = sorted({u.conversation_id for u in group})
-        db.add(Session(start_at=group[0].spoken_at, end_at=group[-1].spoken_at, conversation_ids=conv_ids))
+        matched_starts.add(start_at)
+
+        existing = existing_by_start.get(start_at)
+        if existing is not None:
+            existing.end_at = end_at
+            existing.conversation_ids = conv_ids
+            db.add(existing)
+        else:
+            db.add(Session(start_at=start_at, end_at=end_at, conversation_ids=conv_ids))
+
+    for start_at, s in existing_by_start.items():
+        if start_at not in matched_starts and s.session_type is None:
+            db.delete(s)
+
     db.commit()
     return len(groups)
 

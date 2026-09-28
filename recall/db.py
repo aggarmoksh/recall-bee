@@ -54,6 +54,12 @@ class Session(SQLModel, table=True):
     start_at: datetime = Field(index=True)
     end_at: datetime | None = None
     conversation_ids: list[int] = Field(default_factory=list, sa_column=Column(JSON))
+    # Phase 4A classification (set by recall.questions.generate_for_session).
+    # lecture_study | substantive_discussion | casual | personal
+    session_type: str | None = None
+    session_type_reason: str | None = None
+    # none (unclassified or casual/personal -- no questions) | pending | approved | rejected
+    approval_status: str = "none"
 
 
 class Question(SQLModel, table=True):
@@ -68,6 +74,7 @@ class Question(SQLModel, table=True):
     source_excerpt: str
     topic: str | None = None
     language: str | None = None  # Phase 7 target-language flag
+    active: bool = True  # False = retired (e.g. excluded_sessions.txt, --reject-question) -- never deleted
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -86,9 +93,11 @@ class Answer(SQLModel, table=True):
     utterance_ids: list[int] = Field(default_factory=list, sa_column=Column(JSON))
     raw_text: str
     matched_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    correct: bool | None = None
+    verdict: str | None = None  # correct | partial | incorrect | not_an_answer | no_answer | incomplete_capture
+    rubric_points_hit: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     quality: int | None = None  # SM-2 quality scale, 0-5
-    feedback: str | None = None
+    feedback: str | None = None  # <=12 words, fits a notification
+    operator_agrees: bool | None = None  # set by `python -m recall.review`
 
 
 class ReviewState(SQLModel, table=True):
@@ -99,6 +108,24 @@ class ReviewState(SQLModel, table=True):
     repetitions: int = 0
     due_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     last_reviewed_at: datetime | None = None
+
+
+class FeedbackTodo(SQLModel, table=True):
+    """Tracks every feedback todo Recall posts, so cleanup can delete only
+    ids Recall itself created -- never touching the user's own todos."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    bee_todo_id: int = Field(index=True, unique=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class LLMCallLog(SQLModel, table=True):
+    """One row per local calendar date, counting LLM calls made that day --
+    enforces the 80/day hard cap (AGENT.md Loop policy)."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    date: str = Field(index=True, unique=True)  # YYYY-MM-DD, local date
+    count: int = 0
 
 
 def create_db_and_tables() -> None:

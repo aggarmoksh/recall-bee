@@ -16,6 +16,7 @@ Fallback grading path (only if the Phase 2 explain-back gate fails): self-grade 
 - **Storage:** SQLite via `sqlmodel`. File `recall.db` at repo root, gitignored.
 - **Spaced repetition:** SM-2, hand-implemented.
 - **LLM:** behind a small provider interface (`recall/llm/`) with one method per job (generate_questions, grade_answer). Default provider: **Google Gemini** (`google-genai` SDK, current Flash model, key `GEMINI_API_KEY` in `.env`). Anthropic adapter optional later. Swapping must be a config change plus one adapter file, never a rewrite. Structured JSON output only.
+- **AWS:** boto3 for Bedrock. Credentials via `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` in `.env` (IAM user `recall-dev`, never root). Never log or commit keys.
 - **Frontend:** Next.js 15 (App Router) + TypeScript + Tailwind v4. No component library.
 - **Auth:** none. Single-user local app.
 - **Deploy:** local only.
@@ -48,7 +49,7 @@ At the end of every phase print exactly `Phase N complete. Consult advisor with:
 - **Phase 2 — Privacy scrub + schema update + explain-back reliability gate (10 trials, pass = 8/10) + ingestion.**
 - **Phase 3 — Question generator** (transcript → questions with rubric + source excerpt).
 - **Phase 4 (merged 4+5) — Full loop daemon:** session classification + auto/pending approval, dispatch policy, grading, feedback todo, todo cleanup, `python -m recall.run`. Mid-phase checkpoint after grading unit tests.
-- **Phase 5 — 5-day dogfood** (operator uses Recall on real learning material; kill criterion: ignoring >50% of prompts by day 3 → rethink cadence/length before polish).
+- **Phase 5 — 2-day trial.** Day 1 = `RECALL_PROFILE=dense` (15-min gap, max 25/day, first review 30 min after session): target >= 20 graded answers; kill if capture < 80% or grader agreement < 80%. Day 2 = `normal` profile in the background while Phase 6 is built: measures usability (kill if > 50% prompts ignored) and day-1→day-2 retention. After that the daemon keeps running on normal until the video, to build a multi-week retention curve.
 - **Phase 6 — Dashboard** (due today, mastery by topic, question with source excerpt, answer transcript + grade + feedback).
 - **Phase 7 — Target-language flag.**
 - **Phase 8 — Demo polish, friction log final, video script, Devpost draft.**
@@ -79,17 +80,23 @@ At the end of every phase print exactly `Phase N complete. Consult advisor with:
 - Occasional duplicate notification observed. Log if it recurs.
 
 **Schema decisions (advisor, 2026-09-24)**
-- Trigger phrase is OPTIONAL (2026-09-25). Operator forgot it 3/10 times in the gate. Matching is by time window after the dispatch's delivery; the trigger only raises confidence. Grader must return an explicit "not_an_answer" verdict for off-topic speech in the window (scored as a miss). Answer window closes 35s after the last utterance in the window (max observed tail latency 25.2s).
+- Trigger phrase is OPTIONAL (2026-09-25). Operator forgot it 3/10 times in the gate. Matching is by time window after the dispatch's delivery; the trigger only raises confidence. Grader must return an explicit "not_an_answer" verdict for off-topic speech in the window (scored as a miss). Answer window closes 60s after the last utterance in the window (revised 2026-09-28: a real live-test answer had a 37s mid-answer thinking-pause that tripped the old 35s threshold and truncated the answer before its substantive content); hard cap unchanged at alarm_at + 5 min.
 - One graded Answer per Dispatch (`Answer.dispatch_id` unique). `raw_text` = concatenated utterances in the answer window; `utterance_ids` = JSON list for evidence. Grade once when the window closes.
 - `Session` table derived from `spoken_at` gaps > 10 min. Questions reference `session_id` + `source_start`/`source_end`. `conversation_id` is a coarse pointer only.
 
 **Loop policy (advisor, 2026-09-25)**
 - Session types from generator: `lecture_study` (auto-approve questions), `substantive_discussion` (questions pending; operator approves via CLI), `casual`/`personal` (no questions).
-- Dispatch: max 6/day, quiet hours 22:00–08:00 local, min 45 min between dispatches, at most ONE open dispatch at a time.
-- Scheduling: first review ~2h after session end, second next day, then SM-2.
+- Dispatch profiles via `RECALL_PROFILE` in `.env`: `normal` = max 6/day, 45-min gap, first review ~2h after session end; `dense` = max 25/day, 15-min gap, first review 30 min after session end. Both: quiet hours 22:00–08:00 local, at most ONE open dispatch at a time.
+- Scheduling: first review per profile, second next day, then SM-2.
+- Product stance (from Becca Farsace's Bee review, Feb 2025): Bee struggles with speaker separation and noisy rooms, and bystander consent is its #1 criticism. Recall never penalizes capture errors, only quizzes on learning sessions, and never generates questions about what other people said about themselves.
 - Grade verdicts: correct→5 (all rubric points) / 4 (minor gap), partial→3, incorrect→1, not_an_answer→0, no_answer→0.
 - After grading: delete the question todo, post a feedback todo with alarm_at=now. Delete Recall feedback todos older than 12h. Only ever delete todos Recall created (tracked by bee_todo_id); never touch the user's own todos.
-- LLM: gemini-2.5-flash (3.x flash returned persistent 503s on 2026-09-25).
+- LLM (revised 2026-09-28): **Amazon Bedrock, Claude Haiku 4.5** (Converse API; use the correct cross-region inference profile ID from Bedrock docs, don't guess). Fallback: **Amazon Nova 2 Lite** via one config change if AWS credits don't cover Anthropic usage. Gemini adapter kept only as a dev fallback. Rationale: cost is negligible either way (~$15–20 total on Haiku); grading noisy, code-switched speech against a rubric with strict JSON is where model quality matters. This also enters the AWS Builder mini. Hard in-code cap: 80 LLM calls/day; temperature 0 for classification and grading.
+- Trial material: AI/ML interview-prep content (talk-heavy lectures/podcasts). The Roman-history lecture sessions are retired via excluded_sessions.txt so trial data starts fresh.
+- NO SELF-FEEDING (2026-09-26): utterances inside any answer window (matched to an Answer or within a Dispatch window) are NEVER used for question generation. Test-era sessions of spoken answers go in `recall/overrides/excluded_sessions.txt`.
+- Generator stays transcript-only. Skip questions that depend on visual references (on-screen maps, charts, "as you can see", deictic "this/here" without spoken content). Operator can `--reject-question <id>`. Grader does NOT penalize correct outside knowledge.
+- Session classification runs once, is persisted, and is never re-run automatically. Operator override via CLI.
+- incomplete_capture: if the answer window has < 12 words and the verdict is not correct, verdict = incomplete_capture, no SM-2 update, re-dispatch in ~2h, feedback "Only caught a few words, will ask again".
 
 **Privacy (hard rule, revised 2026-09-25)**
 - Standard is anonymity/unidentifiability, not "no raw text at all": a transcript, utterance, or Bee payload may be committed as-is if it cannot be tied to a specific identifiable person (no real names, no other uniquely identifying detail). Already-public third-party content (e.g. a YouTube video's transcribed speech) is fine to keep verbatim -- reproduction/copyright is a different concern from privacy and isn't gated by this rule.

@@ -16,7 +16,14 @@ from google import genai
 from google.genai import errors, types
 from pydantic import BaseModel
 
-from recall.llm.base import GeneratedQuestion, GradeResult, GradeVerdict, LLMProvider
+from recall.llm.base import (
+    GeneratedQuestion,
+    GradeResult,
+    GradeVerdict,
+    LLMProvider,
+    QuestionGenerationResult,
+    SessionType,
+)
 
 LOG_PATH = Path(__file__).resolve().parents[2] / "logs" / "llm-usage.ndjson"
 
@@ -37,13 +44,20 @@ class _QuestionSchema(BaseModel):
 
 
 class _QuestionListSchema(BaseModel):
+    session_type: Literal["lecture_study", "substantive_discussion", "casual", "personal"]
+    session_type_reason: str
     questions: list[_QuestionSchema]
 
 
 class _GradeSchema(BaseModel):
-    verdict: Literal["correct", "incorrect", "not_an_answer"]
+    verdict: Literal["correct", "partial", "incorrect", "not_an_answer"]
+    rubric_points_hit: list[str]
     quality: int
     feedback: str
+
+
+class _ShortenSchema(BaseModel):
+    text: str
 
 
 def _log_usage(job: str, model: str, usage) -> None:
@@ -77,6 +91,7 @@ class GeminiProvider(LLMProvider):
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
                         response_schema=response_schema,
+                        temperature=0,  # AGENT.md Loop policy: temperature 0 for classification and grading
                     ),
                 )
             except errors.APIError as e:
@@ -103,36 +118,50 @@ class GeminiProvider(LLMProvider):
 
     def generate_questions(
         self, transcript: str, n: int, target_language: str | None = None
-    ) -> list[GeneratedQuestion]:
+    ) -> QuestionGenerationResult:
         from recall.prompts import render_generate_questions_prompt
 
         prompt = render_generate_questions_prompt(transcript=transcript, n=n, target_language=target_language)
         result = self._generate("generate_questions", prompt, _QuestionListSchema)
-        return [
-            GeneratedQuestion(
-                text=q.text,
-                expected_answer=q.expected_answer,
-                rubric=q.rubric,
-                source_excerpt=q.source_excerpt,
-                topic=q.topic,
-                language=q.language,
-            )
-            for q in result.questions
-        ]
+        session_type: SessionType = result.session_type
+        return QuestionGenerationResult(
+            session_type=session_type,
+            session_type_reason=result.session_type_reason,
+            questions=[
+                GeneratedQuestion(
+                    text=q.text,
+                    expected_answer=q.expected_answer,
+                    rubric=q.rubric,
+                    source_excerpt=q.source_excerpt,
+                    topic=q.topic,
+                    language=q.language,
+                )
+                for q in result.questions
+            ],
+        )
 
     def grade_answer(self, question: GeneratedQuestion, spoken_answer: str) -> GradeResult:
-        prompt = (
-            "You are grading a spoken explanation against a rubric. "
-            "Return verdict \"not_an_answer\" if the speech is off-topic or unrelated to the question "
-            "(not merely wrong) -- e.g. small talk or a different subject caught in the answer window.\n\n"
-            f"Question: {question.text}\n"
-            f"Expected answer: {question.expected_answer}\n"
-            f"Rubric (key points a good explanation should contain): {question.rubric}\n"
-            f"Source excerpt: {question.source_excerpt}\n\n"
-            f"Spoken answer (transcribed, may contain STT errors): {spoken_answer}\n\n"
-            "Grade quality on the SM-2 scale 0-5 (0 = no answer/totally wrong, 5 = perfect). "
-            "A not_an_answer verdict should have quality 0."
+        from recall.prompts import render_grade_answer_prompt
+
+        prompt = render_grade_answer_prompt(
+            question=question.text,
+            expected_answer=question.expected_answer,
+            rubric=question.rubric,
+            source_excerpt=question.source_excerpt,
+            answer_text=spoken_answer,
         )
         result = self._generate("grade_answer", prompt, _GradeSchema)
         verdict: GradeVerdict = result.verdict
-        return GradeResult(verdict=verdict, quality=result.quality, feedback=result.feedback)
+        return GradeResult(
+            verdict=verdict,
+            rubric_points_hit=result.rubric_points_hit,
+            quality=result.quality,
+            feedback=result.feedback,
+        )
+
+    def shorten_question(self, text: str, max_chars: int) -> str:
+        from recall.prompts import render_shorten_question_prompt
+
+        prompt = render_shorten_question_prompt(text=text, max_chars=max_chars)
+        result = self._generate("shorten_question", prompt, _ShortenSchema)
+        return result.text
