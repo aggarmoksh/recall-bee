@@ -9,6 +9,16 @@ Bee captures sustained learning speech (lectures, study sessions, family convers
 
 Fallback grading path (only if the Phase 2 explain-back gate fails): self-grade by ticking the todo on iPhone, detected by polling REST for `completed: true`.
 
+## v4 delivery model (locked 2026-09-30, supersedes timed push dispatch)
+Trial data: 6 timed pushes → 2 answered, 4 missed (67% ignored). Push-at-random-times fails real life (driving, naps, library). Spaced repetition only needs day-level timing, so Recall is now **pull with nudges**:
+1. **Bee stings (nudges):** max 3/day inside the user's active window (`ACTIVE_WINDOW`, default 18:00–00:00; operator 13:00–03:00), spread start / middle / end−90min, plus one right after a lecture_study session closes. Held while Bee heard speech in the last 3 min (busy). Silence never means "free", so a sting is only a nudge, never a question. Stings stop once the daily goal is met. Playful copy ("🐝 6 questions are buzzing for you").
+2. **Start a session:** (a) tick the persistent "Recall: tick when you can talk" todo on iPhone (detected by REST polling `completed: true`), or (b) a spoken start phrase, ONLY if it passes the Phase 5B gate (≥ 8/10).
+3. **Mini-session:** back-to-back questions until the daily quota (6) is done or the user goes quiet: question todo → spoken answer → grade → feedback todo → next question. One no_answer ends the session, no penalty; the remaining questions stay due.
+4. **Session report** todo at the end ("Recall: 4/5 ✓ · 🔥 3-day streak"). **Streak** = daily goal met (all due questions, up to 6). The day resets at 04:00 local.
+5. Misses never touch SM-2. Timed random dispatch is removed.
+Kill criteria: over 2 days, ≥ 1 session/day and ≥ 80% of in-session questions answered.
+Not building: XP, badges, leaderboards, levels, unlimited nudges. Learned active window from Bee data → POSTLAUNCH.
+
 ## Stack (LOCKED. Do not substitute without asking.)
 - **Runtime:** Windows 10/11, git bash, Python 3.12, Node 20+
 - **Backend:** FastAPI + Uvicorn
@@ -49,7 +59,9 @@ At the end of every phase print exactly `Phase N complete. Consult advisor with:
 - **Phase 2 — Privacy scrub + schema update + explain-back reliability gate (10 trials, pass = 8/10) + ingestion.**
 - **Phase 3 — Question generator** (transcript → questions with rubric + source excerpt).
 - **Phase 4 (merged 4+5) — Full loop daemon:** session classification + auto/pending approval, dispatch policy, grading, feedback todo, todo cleanup, `python -m recall.run`. Mid-phase checkpoint after grading unit tests.
-- **Phase 5 — 2-day trial.** Day 1 = `RECALL_PROFILE=dense` (15-min gap, max 25/day, first review 30 min after session): target >= 20 graded answers; kill if capture < 80% or grader agreement < 80%. Day 2 = `normal` profile in the background while Phase 6 is built: measures usability (kill if > 50% prompts ignored) and day-1→day-2 retention. After that the daemon keeps running on normal until the video, to build a multi-week retention curve.
+- **Phase 5B — v4 gates:** spoken-start test (10 trials), tick-latency test, emoji-on-Watch check, session 15/16 loop diagnosis. Test + diagnose only.
+- **Phase 5C — v4 build:** stings, ready todo, mini-sessions, report + streak, no-penalty misses (+ recompute past no_answers), the 5 dashboard fixes, and a fix for the session loop.
+- **Phase 5 (old) — 2-day trial (superseded by the v4 kill criteria above).** Day 1 = `RECALL_PROFILE=dense` (15-min gap, max 25/day, first review 30 min after session): target >= 20 graded answers; kill if capture < 80% or grader agreement < 80%. Day 2 = `normal` profile in the background while Phase 6 is built: measures usability (kill if > 50% prompts ignored) and day-1→day-2 retention. After that the daemon keeps running on normal until the video, to build a multi-week retention curve.
 - **Phase 6 — Dashboard** (due today, mastery by topic, question with source excerpt, answer transcript + grade + feedback).
 - **Phase 7 — Target-language flag.**
 - **Phase 8 — Demo polish, friction log final, video script, Devpost draft.**
@@ -89,7 +101,11 @@ At the end of every phase print exactly `Phase N complete. Consult advisor with:
 - Dispatch profiles via `RECALL_PROFILE` in `.env`: `normal` = max 6/day, 45-min gap, first review ~2h after session end; `dense` = max 25/day, 15-min gap, first review 30 min after session end. Both: quiet hours 22:00–08:00 local, at most ONE open dispatch at a time.
 - Scheduling: first review per profile, second next day, then SM-2.
 - Product stance (from Becca Farsace's Bee review, Feb 2025): Bee struggles with speaker separation and noisy rooms, and bystander consent is its #1 criticism. Recall never penalizes capture errors, only quizzes on learning sessions, and never generates questions about what other people said about themselves.
-- Grade verdicts: correct→5 (all rubric points) / 4 (minor gap), partial→3, incorrect→1, not_an_answer→0, no_answer→0.
+- Grade verdicts: correct→5 (all rubric points) / 4 (minor gap), partial→3, incorrect→1, not_an_answer→0. **no_answer does NOT update SM-2** (2026-09-30): a missed notification is not forgetting. Re-queue at the next eligible slot, max 2 retries/day; counted only as "ignored" in usability stats.
+- Late answers: SUPERSEDED by the v4 pull model (never built). Answers match only inside the in-session window: question delivery → 60s tail-close after the last utterance, hard cap 5 min.
+- Spoken start (Phase 5B, 2026-10-01): variant A only, "Hey Bee, let's do a Recall session, I'm ready for my questions." 5/5 detected, 0 assistant interceptions. Fuzzy match on "recall" + "session". Start-phrase utterances are excluded from question generation like answers.
+- Bee REWRITES notification text into its own conversational voice ("<Name>, sorry to interrupt..."). Numbers and facts survive; emoji and symbols do not. All Recall copy is plain words, no emoji, no ✓/✗. The meaning of questions has held so far, but Bee sometimes appends a hint; track this per answer (kill: > 30% hinted → revisit).
+- Laptop sleep kills the daemon and the stream. On wake, the daemon must reconnect the stream and recover any in-flight session/dispatch state without manual cleanup.
 - After grading: delete the question todo, post a feedback todo with alarm_at=now. Delete Recall feedback todos older than 12h. Only ever delete todos Recall created (tracked by bee_todo_id); never touch the user's own todos.
 - LLM (revised 2026-09-28): **Amazon Bedrock, Claude Haiku 4.5** (Converse API; use the correct cross-region inference profile ID from Bedrock docs, don't guess). Fallback: **Amazon Nova 2 Lite** via one config change if AWS credits don't cover Anthropic usage. Gemini adapter kept only as a dev fallback. Rationale: cost is negligible either way (~$15–20 total on Haiku); grading noisy, code-switched speech against a rubric with strict JSON is where model quality matters. This also enters the AWS Builder mini. Hard in-code cap: 80 LLM calls/day; temperature 0 for classification and grading.
 - Trial material: AI/ML interview-prep content (talk-heavy lectures/podcasts). The Roman-history lecture sessions are retired via excluded_sessions.txt so trial data starts fresh.

@@ -12,4 +12,5 @@ Anything the operator or agent wants to build that is NOT on the phase list goes
 - Mobile web PWA with push notifications as a backup wrist channel.
 - Bedrock/AgentCore wrapper if the AWS Builder mini is not pursued in Phase 5.
 - MCP server exposing Recall as a tool for other agents.
+- Learned active window: infer each user's active hours from Bee utterance timestamps ("Bee hears you most 2pm–1am") instead of a configured window.
 - Class-level confusion maps (requires multiple Bee users; unbuildable solo).
