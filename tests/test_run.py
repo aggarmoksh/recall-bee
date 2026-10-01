@@ -2,17 +2,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlmodel import Session as DBSession
-from sqlmodel import SQLModel, create_engine, select
+from sqlmodel import SQLModel, create_engine
 
-from recall.db import Answer, Conversation, Dispatch, Question
+from recall.db import Conversation, Question
 from recall.db import Session as SessionModel
-from recall.matcher import DEFAULT_HARD_CAP_S
-from recall.run import (
-    ANSWER_WINDOW_SAFETY_BUFFER_S,
-    SESSION_CLOSED_GAP_MINUTES,
-    find_closed_unclassified_sessions,
-    find_dispatches_ready_for_answer_flow,
-)
+from recall.run import SESSION_CLOSED_GAP_MINUTES, find_closed_unclassified_sessions
 
 BASE = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 
@@ -68,39 +62,144 @@ def test_manually_excluded_session_is_skipped(db_engine, monkeypatch):
         assert find_closed_unclassified_sessions(db, now) == []
 
 
-def test_dispatch_ready_once_hard_cap_plus_buffer_elapsed(db_engine):
-    with DBSession(db_engine) as db:
+# --- spoken-start detection buffer (_on_new_utterance / fast_tick) ---
+
+
+class _FakeBeeClient:
+    def __init__(self, store: dict, next_id_box: list):
+        self.store = store
+        self.next_id_box = next_id_box
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        pass
+
+    def create_todo(self, text, alarm_at=None):
+        new_id = self.next_id_box[0]
+        self.next_id_box[0] += 1
+        self.store[new_id] = {"text": text, "completed": False, "deleted": False}
+        return {"id": new_id}
+
+    def get_todo(self, todo_id):
+        return {"id": todo_id, "completed": self.store[todo_id]["completed"]}
+
+    def delete_todo(self, todo_id):
+        self.store[todo_id]["deleted"] = True
+
+
+@pytest.fixture
+def reset_run_state(monkeypatch):
+    """_on_new_utterance/_pending_spoken_start are module-level state --
+    reset between tests so they don't leak across test runs."""
+    import recall.run as run_module
+
+    run_module._recent_utterances.clear()
+    run_module._pending_spoken_start = None
+    yield
+    run_module._recent_utterances.clear()
+    run_module._pending_spoken_start = None
+
+
+@pytest.fixture
+def run_db_engine(tmp_path, monkeypatch, reset_run_state):
+    engine = create_engine(f"sqlite:///{tmp_path}/test.db")
+    SQLModel.metadata.create_all(engine)
+    monkeypatch.setattr("recall.run.get_session", lambda: DBSession(engine))
+    monkeypatch.setattr("recall.session.get_session", lambda: DBSession(engine))
+    monkeypatch.setattr("recall.ready_todo.get_session", lambda: DBSession(engine))
+    monkeypatch.setattr("recall.scoring.get_session", lambda: DBSession(engine))
+    return engine
+
+
+def test_on_new_utterance_single_match_flags_pending(reset_run_state):
+    from recall.run import _on_new_utterance
+    import recall.run as run_module
+
+    now = datetime.now(UTC)
+    _on_new_utterance(1, "Hey Bee, let's do a Recall session, I'm ready for my questions.", now)
+
+    assert run_module._pending_spoken_start == [1]
+
+
+def test_on_new_utterance_split_across_two_utterances_flags_pending(reset_run_state):
+    """Reproduces the Phase 5B pattern where STT can split the words
+    themselves across chunks, not just the sentence -- "recall" lands in
+    one utterance, "session" only arrives in the next."""
+    from recall.run import _on_new_utterance
+    import recall.run as run_module
+
+    now = datetime.now(UTC)
+    _on_new_utterance(1, "Hey Bee, let's do a Recall", now)
+    assert run_module._pending_spoken_start is None  # "session" hasn't arrived yet
+    _on_new_utterance(2, "session now, I'm ready for my questions.", now + timedelta(seconds=2))
+
+    assert run_module._pending_spoken_start == [1, 2]
+
+
+def test_on_new_utterance_old_entries_fall_out_of_the_window(reset_run_state):
+    from recall.run import START_PHRASE_WINDOW_S, _on_new_utterance
+    import recall.run as run_module
+
+    now = datetime.now(UTC)
+    _on_new_utterance(1, "unrelated chatter about recall", now - timedelta(seconds=START_PHRASE_WINDOW_S + 5))
+    _on_new_utterance(2, "something about a session later", now)
+
+    # "recall" fell out of the rolling window before "session" arrived
+    assert run_module._pending_spoken_start is None
+
+
+def test_on_new_utterance_unrelated_speech_never_flags(reset_run_state):
+    from recall.run import _on_new_utterance
+    import recall.run as run_module
+
+    _on_new_utterance(1, "I need to buy groceries later", datetime.now(UTC))
+    assert run_module._pending_spoken_start is None
+
+
+def test_react_to_trigger_posts_catch_up_todo_when_nothing_due(run_db_engine, monkeypatch):
+    from recall.run import _react_to_trigger
+
+    store, next_id_box = {}, [1]
+    client = _FakeBeeClient(store, next_id_box)
+    with DBSession(run_db_engine) as db:
         db.add(Conversation(id=1))
-        q = Question(conversation_id=1, text="Q", expected_answer="A", source_excerpt="...")
-        db.add(q)
-        db.commit()
-        db.refresh(q)
-        d = Dispatch(question_id=q.id, bee_todo_id=1, alarm_at=BASE, status="pending")
-        db.add(d)
         db.commit()
 
-        too_early = BASE + timedelta(seconds=DEFAULT_HARD_CAP_S + ANSWER_WINDOW_SAFETY_BUFFER_S - 1)
-        assert find_dispatches_ready_for_answer_flow(db, too_early) == []
+    _react_to_trigger(client, "tick", datetime.now(UTC))
 
-        ready_time = BASE + timedelta(seconds=DEFAULT_HARD_CAP_S + ANSWER_WINDOW_SAFETY_BUFFER_S)
-        result = find_dispatches_ready_for_answer_flow(db, ready_time)
-        assert len(result) == 1
-        assert result[0].id == d.id
+    assert len(store) == 1
+    assert "nothing due" in list(store.values())[0]["text"]
 
 
-def test_already_answered_dispatch_is_not_ready_again(db_engine):
-    with DBSession(db_engine) as db:
+def test_react_to_trigger_starts_session_when_due(run_db_engine, monkeypatch):
+    from recall.run import _react_to_trigger
+
+    store, next_id_box = {}, [1]
+    client = _FakeBeeClient(store, next_id_box)
+    monkeypatch.setattr("recall.session.BeeProxy", lambda port=None: _FakeProxy())
+    monkeypatch.setattr("recall.session.BeeClient", lambda base_url: client)
+
+    with DBSession(run_db_engine) as db:
         db.add(Conversation(id=1))
-        q = Question(conversation_id=1, text="Q", expected_answer="A", source_excerpt="...")
-        db.add(q)
-        db.commit()
-        db.refresh(q)
-        d = Dispatch(question_id=q.id, bee_todo_id=1, alarm_at=BASE, status="answered")
-        db.add(d)
-        db.commit()
-        db.refresh(d)
-        db.add(Answer(dispatch_id=d.id, raw_text="already graded", utterance_ids=[]))
+        db.add(SessionModel(id=1, start_at=BASE, end_at=BASE, conversation_ids=[1], approval_status="approved"))
+        db.add(Question(id=1, conversation_id=1, session_id=1, text="Q", expected_answer="A", rubric=["a"], source_excerpt="..."))
         db.commit()
 
-        later = BASE + timedelta(hours=1)
-        assert find_dispatches_ready_for_answer_flow(db, later) == []
+    _react_to_trigger(client, "spoken", datetime.now(UTC))
+
+    # one todo for the question itself (start_session dispatches immediately)
+    assert len(store) == 1
+    assert "nothing due" not in list(store.values())[0]["text"]
+
+
+class _FakeProxy:
+    def __init__(self, port=None):
+        self.base_url = "http://fake"
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        pass

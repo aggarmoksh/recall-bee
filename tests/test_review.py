@@ -5,7 +5,7 @@ import pytest
 from sqlmodel import Session as DBSession
 from sqlmodel import SQLModel, create_engine
 
-from recall.db import Answer, Conversation, Dispatch, Question
+from recall.db import Answer, Conversation, Dispatch, Question, SessionRun
 from recall.review import _first_n_words, answers_last_24h, append_daily_summary, daily_summary
 
 BASE = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
@@ -27,6 +27,7 @@ def db_engine(tmp_path, monkeypatch):
     engine = create_engine(f"sqlite:///{tmp_path}/test.db")
     SQLModel.metadata.create_all(engine)
     monkeypatch.setattr("recall.review.get_session", lambda: DBSession(engine))
+    monkeypatch.setattr("recall.scoring.get_session", lambda: DBSession(engine))
     return engine
 
 
@@ -102,6 +103,38 @@ def test_daily_summary_handles_no_data(db_engine):
     assert summary["answered"] == 0
     assert summary["agreement_pct"] is None
     assert summary["mean_quality"] is None
+    assert summary["answer_rate_pct"] is None
+    assert summary["hint_rate_pct"] is None
+    assert summary["streak_days"] == 0
+
+
+def test_daily_summary_session_and_hint_stats(db_engine):
+    with DBSession(db_engine) as db:
+        db.add(SessionRun(trigger="spoken", status="completed", started_at=BASE - timedelta(hours=1),
+                           ended_at=BASE - timedelta(minutes=50), questions_asked=2, questions_answered=2))
+        db.add(SessionRun(trigger="tick", status="ended_no_answer", started_at=BASE - timedelta(hours=2),
+                           ended_at=BASE - timedelta(hours=1, minutes=55), questions_asked=3, questions_answered=1))
+        db.commit()
+
+    a1 = _seed_answer(db_engine, BASE - timedelta(hours=1), "correct", 5)
+    a2 = _seed_answer(db_engine, BASE - timedelta(hours=2), "correct", 5)
+    with DBSession(db_engine) as db:
+        answer1 = db.get(Answer, a1)
+        answer1.hint_in_notification = True
+        answer2 = db.get(Answer, a2)
+        answer2.hint_in_notification = False
+        db.add(answer1)
+        db.add(answer2)
+        db.commit()
+
+    summary = daily_summary(now=BASE)
+
+    assert summary["sessions_spoken"] == 1
+    assert summary["sessions_tick"] == 1
+    assert summary["in_session_asked"] == 5
+    assert summary["in_session_answered"] == 3
+    assert summary["answer_rate_pct"] == pytest.approx(60.0)
+    assert summary["hint_rate_pct"] == pytest.approx(50.0)
 
 
 def test_append_daily_summary_writes_no_transcript_text(db_engine, monkeypatch, tmp_path):

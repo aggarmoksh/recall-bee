@@ -85,6 +85,9 @@ class Dispatch(SQLModel, table=True):
     alarm_at: datetime
     status: str = "pending"  # pending / delivered / answered / missed
     dispatched_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    # v4 (Phase 5C): which mini-session this question belongs to. NULL for
+    # pre-v4 historical rows (the old timed-dispatch model had no sessions).
+    session_run_id: int | None = Field(default=None, foreign_key="sessionrun.id", index=True)
 
 
 class Answer(SQLModel, table=True):
@@ -98,6 +101,7 @@ class Answer(SQLModel, table=True):
     quality: int | None = None  # SM-2 quality scale, 0-5
     feedback: str | None = None  # <=12 words, fits a notification
     operator_agrees: bool | None = None  # set by `python -m recall.review`
+    hint_in_notification: bool | None = None  # Phase 5C Step 7: set by `python -m recall.review`
 
 
 class ReviewState(SQLModel, table=True):
@@ -117,6 +121,53 @@ class FeedbackTodo(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     bee_todo_id: int = Field(index=True, unique=True)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class SessionRun(SQLModel, table=True):
+    """One v4 mini-session (Phase 5C): a back-to-back run of due questions
+    started by the user (tick todo or spoken start phrase), ended by the
+    daily quota, running out of due questions, or one no_answer (no
+    penalty -- the question stays due). Only one `status == "active"` row
+    at a time; all state lives here so a daemon restart resumes correctly."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    ended_at: datetime | None = None
+    trigger: str  # "tick" | "spoken"
+    status: str = "active"  # active | completed | ended_no_answer
+    questions_asked: int = 0
+    questions_answered: int = 0  # non-no_answer verdicts
+
+
+class StingTodo(SQLModel, table=True):
+    """Tracks every sting (nudge) todo Recall posts, so cleanup can delete
+    only ids Recall created, and so at most one sting per slot per local
+    day is sent."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    bee_todo_id: int = Field(index=True, unique=True)
+    local_date: str = Field(index=True)  # YYYY-MM-DD, local day this sting belongs to
+    slot: str  # "start" | "middle" | "end" | "post_lecture"
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class ReadyTodo(SQLModel, table=True):
+    """Tracks the single persistent 'Recall: tick when you can talk' todo.
+    Recreated whenever it's ticked or goes missing (deleted)."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    bee_todo_id: int = Field(index=True, unique=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class StartPhraseUtterance(SQLModel, table=True):
+    """Tracks utterances that matched the spoken session-start phrase, so
+    they're excluded from question generation the same way answer-window
+    utterances already are (no-self-feeding)."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    utterance_id: int = Field(index=True, unique=True)
+    detected_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class LLMCallLog(SQLModel, table=True):

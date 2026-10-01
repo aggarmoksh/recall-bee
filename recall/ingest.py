@@ -174,10 +174,15 @@ def rebuild_sessions(db) -> int:
     return len(groups)
 
 
-async def consume_stream_live() -> None:
+async def consume_stream_live(on_new_utterance=None) -> None:
     """Live stream consumer for long-running mode: upserts new-utterance
     events as they arrive, deduping by utterance id against whatever
-    polling has already ingested."""
+    polling has already ingested.
+
+    `on_new_utterance`, if given, is called as `on_new_utterance(utterance_id,
+    text, spoken_at)` for every utterance actually inserted (not duplicates)
+    -- Phase 5C's run.py uses this for live spoken-start-phrase detection,
+    without this module needing to know anything about sessions."""
     uuid_to_conv_id: dict[str, int] = {}
     db = get_session()
     try:
@@ -199,6 +204,9 @@ async def consume_stream_live() -> None:
                     continue  # can't resolve conversation yet -- next poll picks it up
                 if upsert_utterance(db, conv_id, conv_uuid, u):
                     db.commit()
+                    if on_new_utterance is not None:
+                        spoken_at = _to_dt(u.get("spoken_at"))
+                        on_new_utterance(u["id"], u.get("text", ""), spoken_at)
     finally:
         db.close()
 

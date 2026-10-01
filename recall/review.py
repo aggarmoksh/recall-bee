@@ -11,7 +11,8 @@ from pathlib import Path
 
 from sqlmodel import select
 
-from recall.db import Answer, Dispatch, Question, create_db_and_tables, get_session
+from recall.db import Answer, Dispatch, Question, SessionRun, create_db_and_tables, get_session
+from recall.scoring import current_streak_days
 
 DOGFOOD_LOG_PATH = Path(__file__).resolve().parents[1] / "phase5" / "dogfood_log.md"
 FIRST_N_WORDS = 12
@@ -32,13 +33,16 @@ def _first_n_words(text: str, n: int = FIRST_N_WORDS) -> str:
 
 def daily_summary(now: datetime | None = None) -> dict:
     """Counts and verdicts only -- no transcript/question text, per the
-    privacy-conscious dogfood log requirement."""
+    privacy-conscious dogfood log requirement. v4 (Phase 5C Step 7) adds
+    session-level pull-model stats: how sessions started, in-session
+    answer rate, and hint rate."""
     now = now or datetime.now(UTC)
     cutoff = now - timedelta(hours=24)
     db = get_session()
     try:
         answers = answers_last_24h(db, now)
         dispatches = db.exec(select(Dispatch).where(Dispatch.dispatched_at >= cutoff)).all()
+        runs = db.exec(select(SessionRun).where(SessionRun.started_at >= cutoff)).all()
     finally:
         db.close()
 
@@ -48,6 +52,15 @@ def daily_summary(now: datetime | None = None) -> dict:
     reviewed = [a for a in answers if a.operator_agrees is not None and a.verdict != "code_truncated"]
     qualities = [a.quality for a in answers if a.quality is not None]
 
+    sessions_spoken = sum(1 for r in runs if r.trigger == "spoken")
+    sessions_tick = sum(1 for r in runs if r.trigger == "tick")
+    in_session_asked = sum(r.questions_asked for r in runs)
+    in_session_answered = sum(r.questions_answered for r in runs)
+    answer_rate_pct = (in_session_answered / in_session_asked * 100) if in_session_asked else None
+
+    hinted = [a for a in answers if a.hint_in_notification is not None]
+    hint_rate_pct = (sum(1 for a in hinted if a.hint_in_notification) / len(hinted) * 100) if hinted else None
+
     return {
         "date": now.date().isoformat(),
         "prompts_sent": len(dispatches),
@@ -56,6 +69,13 @@ def daily_summary(now: datetime | None = None) -> dict:
         "incomplete_capture": sum(1 for a in answers if a.verdict == "incomplete_capture"),
         "agreement_pct": (sum(1 for a in reviewed if a.operator_agrees) / len(reviewed) * 100) if reviewed else None,
         "mean_quality": (sum(qualities) / len(qualities)) if qualities else None,
+        "sessions_spoken": sessions_spoken,
+        "sessions_tick": sessions_tick,
+        "in_session_asked": in_session_asked,
+        "in_session_answered": in_session_answered,
+        "answer_rate_pct": answer_rate_pct,
+        "hint_rate_pct": hint_rate_pct,
+        "streak_days": current_streak_days(now),
     }
 
 
@@ -63,6 +83,8 @@ def append_daily_summary(now: datetime | None = None) -> dict:
     summary = daily_summary(now)
     agreement_text = f"{summary['agreement_pct']:.0f}%" if summary["agreement_pct"] is not None else "N/A (nothing reviewed yet)"
     quality_text = f"{summary['mean_quality']:.2f}" if summary["mean_quality"] is not None else "N/A"
+    answer_rate_text = f"{summary['answer_rate_pct']:.0f}%" if summary["answer_rate_pct"] is not None else "N/A (no sessions)"
+    hint_rate_text = f"{summary['hint_rate_pct']:.0f}%" if summary["hint_rate_pct"] is not None else "N/A (not tracked yet)"
 
     lines = [
         f"## {summary['date']}",
@@ -72,6 +94,10 @@ def append_daily_summary(now: datetime | None = None) -> dict:
         f"- incomplete_capture: {summary['incomplete_capture']}",
         f"- Grader agreement: {agreement_text}",
         f"- Mean quality: {quality_text}",
+        f"- Sessions started: {summary['sessions_spoken']} spoken, {summary['sessions_tick']} tick",
+        f"- In-session questions: {summary['in_session_answered']} answered of {summary['in_session_asked']} asked ({answer_rate_text})",
+        f"- Hint rate: {hint_rate_text}",
+        f"- Streak: {summary['streak_days']} day(s)",
         "",
     ]
     DOGFOOD_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -96,6 +122,8 @@ def review_interactive(now: datetime | None = None) -> None:
             print(f"Verdict: {a.verdict}  Feedback: {a.feedback}")
             reply = input("Do you agree with this grade? (y/n): ").strip().lower()
             a.operator_agrees = reply.startswith("y")
+            hint_reply = input("Did Bee's notification include a hint? (y/n): ").strip().lower()
+            a.hint_in_notification = hint_reply.startswith("y")
             db.add(a)
             db.commit()
     finally:

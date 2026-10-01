@@ -1,11 +1,6 @@
-"""Phase 6 dashboard backend: read-mostly FastAPI app, run as its own
+"""v4 dashboard backend (Phase 5C), read-mostly FastAPI app, run as its own
 process (`uvicorn recall.api:app`), separate from the trial daemon
 (`python -m recall.run`).
-
-FROZEN this phase (live trial daemon running against this DB in WAL mode --
-operator instruction, 2026-09-28): recall/run.py, dispatch.py,
-answer_flow.py, matcher.py, grading.py, ingest.py. This module only reads
-from them (importing constants/functions is fine, editing them is not).
 
 Every GET route opens a dedicated SQLite *read-only* connection (`mode=ro`
 URI), separate from recall.db's normal read-write engine, so this process
@@ -28,18 +23,18 @@ from sqlmodel import Session as DBSession
 from sqlmodel import create_engine, select
 
 from recall.config import settings
-from recall.db import DB_PATH, Answer, Dispatch, Question
+from recall.db import DB_PATH, Answer, Dispatch, Question, SessionRun
 from recall.db import Session as SessionModel
-from recall.dispatch import dispatches_today, has_open_dispatch
 from recall.matcher import DEFAULT_HARD_CAP_S
 from recall.overrides import load_excluded_sessions
 from recall.questions import reject_question, set_approval
+from recall.scoring import answered_today_count, current_streak_days, daily_goal_met
 
 READONLY_DB_URI = f"sqlite:///file:{Path(DB_PATH).resolve()}?mode=ro&uri=true"
 _readonly_engine = create_engine(READONLY_DB_URI)
 
 RUBRIC_FUZZY_THRESHOLD = 0.6
-GRADED_VERDICTS_FOR_MASTERY_EXCLUDE = {"code_truncated"}  # Phase 4C: a tooling-bug tag, not a real grade
+GRADED_VERDICTS_FOR_MASTERY_EXCLUDE = {"code_truncated", "no_answer"}  # tooling tag + a miss, not a real grade
 
 
 def _ro_session() -> DBSession:
@@ -70,12 +65,22 @@ def health() -> dict:
 # --- GET /api/today ---
 
 
-def _window_status(alarm_at: datetime, now: datetime) -> str:
-    if now < alarm_at:
-        return "waiting"
-    if now < alarm_at + timedelta(seconds=DEFAULT_HARD_CAP_S):
-        return "listening"
-    return "grading"
+def _active_session_payload(db, run: SessionRun) -> dict | None:
+    dispatches = db.exec(select(Dispatch).where(Dispatch.session_run_id == run.id)).all()
+    open_dispatch = None
+    for d in dispatches:
+        if db.exec(select(Answer).where(Answer.dispatch_id == d.id)).first() is None:
+            open_dispatch = d
+            break
+    if open_dispatch is None:
+        return None
+    question = db.get(Question, open_dispatch.question_id)
+    return {
+        "question_number": run.questions_asked,
+        "question_id": question.id if question else None,
+        "question_text": question.text if question else None,
+        "alarm_at": open_dispatch.alarm_at.isoformat(),
+    }
 
 
 @app.get("/api/today")
@@ -83,19 +88,18 @@ def get_today() -> dict:
     now = datetime.now(UTC)
     db = _ro_session()
     try:
-        todays = dispatches_today(db, now)
-        open_dispatch = has_open_dispatch(db)
-
-        open_dispatch_payload = None
-        if open_dispatch is not None:
-            question = db.get(Question, open_dispatch.question_id)
-            open_dispatch_payload = {
-                "dispatch_id": open_dispatch.id,
-                "question_id": question.id if question else None,
-                "question_text": question.text if question else None,
-                "alarm_at": open_dispatch.alarm_at.isoformat(),
-                "window_status": _window_status(open_dispatch.alarm_at, now),
+        active_run = db.exec(select(SessionRun).where(SessionRun.status == "active")).first()
+        session_payload = None
+        if active_run is not None:
+            session_payload = {
+                "state": "in_session",
+                "trigger": active_run.trigger,
+                "questions_asked": active_run.questions_asked,
+                "daily_quota": settings.daily_quota,
+                "current_question": _active_session_payload(db, active_run),
             }
+        else:
+            session_payload = {"state": "idle"}
 
         recent_answers = db.exec(select(Answer).order_by(Answer.matched_at.desc()).limit(10)).all()
         answers_payload = []
@@ -113,11 +117,25 @@ def get_today() -> dict:
                 }
             )
 
+        last_completed = db.exec(
+            select(SessionRun).where(SessionRun.status.in_(["completed", "ended_no_answer"])).order_by(SessionRun.ended_at.desc())
+        ).first()
+        report_card = None
+        if last_completed is not None and last_completed.ended_at is not None and _to_local(last_completed.ended_at).date() == _to_local(now).date():
+            report_card = {
+                "questions_asked": last_completed.questions_asked,
+                "questions_answered": last_completed.questions_answered,
+                "ended_at": last_completed.ended_at.isoformat(),
+            }
+
         return {
-            "profile": settings.recall_profile,
-            "dispatches_today": len(todays),
-            "open_dispatch": open_dispatch_payload,
+            "daily_quota": settings.daily_quota,
+            "answered_today": answered_today_count(db, now),
+            "goal_met": daily_goal_met(db, now),
+            "streak_days": current_streak_days(now),
+            "session": session_payload,
             "recent_answers": answers_payload,
+            "report_card": report_card,
         }
     finally:
         db.close()
@@ -153,13 +171,6 @@ def get_answer(answer_id: int) -> dict:
         question = db.get(Question, dispatch.question_id) if dispatch else None
         session = db.get(SessionModel, question.session_id) if question and question.session_id else None
 
-        # Exact text a wrist feedback todo would show -- reuses answer_flow's
-        # own formatting function (frozen file, read-only import) so this
-        # can never drift from what's actually sent.
-        from recall.answer_flow import _feedback_todo_text
-
-        feedback_text = _feedback_todo_text(answer, question) if question else None
-
         return {
             "answer_id": answer.id,
             "question": {"id": question.id, "text": question.text} if question else None,
@@ -167,7 +178,8 @@ def get_answer(answer_id: int) -> dict:
             "answer_transcript": answer.raw_text,
             "verdict": answer.verdict,
             "quality": answer.quality,
-            "feedback_text": feedback_text,
+            "feedback": answer.feedback,
+            "hint_in_notification": answer.hint_in_notification,
             "source_excerpt": question.source_excerpt if question else None,
             "session_datetime": _to_local(session.start_at).isoformat() if session and session.start_at else None,
         }
@@ -175,7 +187,18 @@ def get_answer(answer_id: int) -> dict:
         db.close()
 
 
-# --- GET /api/mastery ---
+# --- GET /api/mastery (Phase 5C fix: grouped by source session, not topic) ---
+
+
+def _session_label(session: SessionModel, questions: list[Question]) -> str:
+    topics = [q.topic for q in questions if q.topic]
+    label_topic = max(set(topics), key=topics.count) if topics else None
+    if label_topic:
+        return label_topic
+    if session.session_type_reason:
+        words = session.session_type_reason.split()
+        return " ".join(words[:8]) + ("..." if len(words) > 8 else "")
+    return f"Session {session.id}"
 
 
 @app.get("/api/mastery")
@@ -183,17 +206,18 @@ def get_mastery() -> dict:
     db = _ro_session()
     try:
         questions = db.exec(select(Question).where(Question.active == True)).all()  # noqa: E712
-        by_topic: dict[str, list[Question]] = defaultdict(list)
+        by_session: dict[int, list[Question]] = defaultdict(list)
         for q in questions:
-            by_topic[q.topic or "(untopiced)"].append(q)
+            if q.session_id is not None:
+                by_session[q.session_id].append(q)
 
-        topics = []
-        # review-number x day grid, aggregated across ALL topics for the
-        # single retention series the /progress page charts.
+        sessions_payload = []
         review_day_qualities: dict[tuple[str, int], list[int]] = defaultdict(list)
 
-        for topic, qs in by_topic.items():
-            latest_qualities = []
+        for session_id, qs in by_session.items():
+            session = db.get(SessionModel, session_id)
+            question_rows = []
+            qualities_for_avg = []
             for q in qs:
                 answers = db.exec(
                     select(Answer)
@@ -201,19 +225,38 @@ def get_mastery() -> dict:
                     .where(Dispatch.question_id == q.id)
                     .order_by(Answer.matched_at)
                 ).all()
-                answers = [a for a in answers if a.verdict not in GRADED_VERDICTS_FOR_MASTERY_EXCLUDE and a.quality is not None]
-                if not answers:
-                    continue
-                latest_qualities.append(answers[-1].quality)
-                for i, a in enumerate(answers, start=1):
+                real_answers = [a for a in answers if a.verdict not in GRADED_VERDICTS_FOR_MASTERY_EXCLUDE and a.quality is not None]
+
+                if any(a.verdict == "no_answer" for a in answers) and not real_answers:
+                    status_label = "Missed, not counted against you"
+                elif real_answers:
+                    status_label = None
+                else:
+                    status_label = "Capturing..." if session.session_type is None else None
+
+                latest_quality = real_answers[-1].quality if real_answers else None
+                if latest_quality is not None:
+                    qualities_for_avg.append(latest_quality)
+                for i, a in enumerate(real_answers, start=1):
                     day_key = _to_local(a.matched_at).date().isoformat()
                     review_day_qualities[(day_key, i)].append(a.quality)
 
-            topics.append(
+                question_rows.append(
+                    {
+                        "question_id": q.id,
+                        "text": q.text,
+                        "latest_quality": latest_quality,
+                        "status_label": status_label,
+                    }
+                )
+
+            sessions_payload.append(
                 {
-                    "topic": topic,
+                    "session_id": session_id,
+                    "label": _session_label(session, qs),
                     "question_count": len(qs),
-                    "average_latest_quality": (sum(latest_qualities) / len(latest_qualities)) if latest_qualities else None,
+                    "average_quality": (sum(qualities_for_avg) / len(qualities_for_avg)) if qualities_for_avg else None,
+                    "questions": question_rows,
                 }
             )
 
@@ -226,7 +269,8 @@ def get_mastery() -> dict:
             for day, points in sorted(days.items())
         ]
 
-        return {"topics": sorted(topics, key=lambda t: t["topic"]), "retention_series": retention_series}
+        sessions_payload.sort(key=lambda s: s["session_id"], reverse=True)
+        return {"sessions": sessions_payload, "retention_series": retention_series}
     finally:
         db.close()
 
@@ -247,7 +291,16 @@ def get_sessions() -> dict:
             duration_minutes = None
             if s.start_at and s.end_at:
                 duration_minutes = round((s.end_at - s.start_at).total_seconds() / 60, 1)
-            status = "excluded" if s.id in excluded else s.approval_status
+
+            if s.id in excluded:
+                status = "excluded"
+            elif s.session_type is None:
+                status = "Capturing..."
+            elif s.session_type in ("casual", "personal"):
+                status = "Skipped"
+            else:
+                status = s.approval_status
+
             payload.append(
                 {
                     "session_id": s.id,
@@ -264,14 +317,14 @@ def get_sessions() -> dict:
         db.close()
 
 
-# --- GET /api/privacy ---
+# --- GET /api/privacy (Phase 5C fix: only privacy exclusions, not retired/length-dropped counts) ---
 
 PRIVACY_RULES = [
     "Recall never quizzes on anything other people said about themselves -- only the wearer's own learning sessions.",
     "Casual chit-chat and small talk are classified and skipped entirely -- no questions are ever generated from them.",
     "Personal conversations (about other people's relationships, circumstances, or feelings) are skipped entirely too.",
-    "Recall never penalizes capture errors -- a garbled or cut-off recording is never held against the wearer.",
-    "Spoken answers are never reused as source material for new questions (no self-feeding).",
+    "Recall never penalizes capture errors -- a missed or garbled notification is never held against the wearer.",
+    "Spoken answers and the session-start phrase are never reused as source material for new questions (no self-feeding).",
     "Any session can be permanently excluded from question generation by the operator, regardless of its content.",
 ]
 
@@ -288,12 +341,10 @@ def get_privacy() -> dict:
             skipped_by_type[s.session_type] += 1
 
         excluded_count = len(load_excluded_sessions())
-        rejected_questions = len(db.exec(select(Question).where(Question.active == False)).all())  # noqa: E712
 
         return {
             "sessions_skipped_by_type": dict(skipped_by_type),
             "excluded_sessions_count": excluded_count,
-            "questions_rejected_count": rejected_questions,
             "rules": PRIVACY_RULES,
         }
     finally:

@@ -1,29 +1,45 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
-export type WindowStatus = "waiting" | "listening" | "grading";
-
-export type OpenDispatch = {
-  dispatch_id: number;
-  question_id: number;
-  question_text: string;
-  alarm_at: string;
-  window_status: WindowStatus;
-};
-
 export type RecentAnswer = {
   answer_id: number;
-  question_id: number;
-  question_text: string;
+  question_id: number | null;
+  question_text: string | null;
   verdict: string;
   quality: number | null;
   matched_at: string;
 };
 
+export type CurrentQuestion = {
+  question_number: number;
+  question_id: number | null;
+  question_text: string | null;
+  alarm_at: string;
+};
+
+export type SessionState =
+  | { state: "idle" }
+  | {
+      state: "in_session";
+      trigger: string;
+      questions_asked: number;
+      daily_quota: number;
+      current_question: CurrentQuestion | null;
+    };
+
+export type ReportCard = {
+  questions_asked: number;
+  questions_answered: number;
+  ended_at: string;
+};
+
 export type TodayResponse = {
-  profile: "normal" | "dense";
-  dispatches_today: number;
-  open_dispatch: OpenDispatch | null;
+  daily_quota: number;
+  answered_today: number;
+  goal_met: boolean;
+  streak_days: number;
+  session: SessionState;
   recent_answers: RecentAnswer[];
+  report_card: ReportCard | null;
 };
 
 export type RubricPoint = { point: string; hit: boolean };
@@ -35,22 +51,32 @@ export type AnswerDetail = {
   answer_transcript: string;
   verdict: string;
   quality: number | null;
-  feedback_text: string | null;
+  feedback: string | null;
+  hint_in_notification: boolean | null;
   source_excerpt: string | null;
   session_datetime: string | null;
 };
 
-export type TopicMastery = {
-  topic: string;
+export type MasteryQuestion = {
+  question_id: number;
+  text: string;
+  latest_quality: number | null;
+  status_label: string | null;
+};
+
+export type MasterySession = {
+  session_id: number;
+  label: string;
   question_count: number;
-  average_latest_quality: number | null;
+  average_quality: number | null;
+  questions: MasteryQuestion[];
 };
 
 export type RetentionPoint = { review_number: number; average_quality: number };
 export type RetentionDay = { day: string; points: RetentionPoint[] };
 
 export type MasteryResponse = {
-  topics: TopicMastery[];
+  sessions: MasterySession[];
   retention_series: RetentionDay[];
 };
 
@@ -69,7 +95,6 @@ export type SessionsResponse = { sessions: SessionRow[] };
 export type PrivacyResponse = {
   sessions_skipped_by_type: Record<string, number>;
   excluded_sessions_count: number;
-  questions_rejected_count: number;
   rules: string[];
 };
 

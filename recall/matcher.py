@@ -49,6 +49,28 @@ class MatchResult:
     trigger_found: bool  # confidence flag only -- never gates matching
 
 
+# Spoken session-start phrase (AGENT.md, Phase 5B gate, variant A only --
+# 5/5 detected, 0 assistant interceptions): "Hey Bee, let's do a Recall
+# session, I'm ready for my questions." STT sometimes splits this across
+# two utterance events a few seconds apart (observed in every Phase 5B
+# trial), so detection checks for "recall" AND "session" each fuzzy-
+# matching some word across the COMBINED text of a short rolling window
+# of recent utterances, not a single utterance in isolation.
+START_PHRASE_WORD_THRESHOLD = 0.75
+
+
+def _word_fuzzy_present(text: str, target: str, threshold: float = START_PHRASE_WORD_THRESHOLD) -> bool:
+    words = _normalize(text).split()
+    return any(difflib.SequenceMatcher(None, w.strip(".,!?\"'"), target).ratio() >= threshold for w in words)
+
+
+def detects_session_start(texts: list[str]) -> bool:
+    """True if "recall" and "session" each fuzzy-match some word across
+    the combined `texts` (e.g. a rolling window of recent utterances)."""
+    combined = " ".join(texts)
+    return _word_fuzzy_present(combined, "recall") and _word_fuzzy_present(combined, "session")
+
+
 def _normalize(text: str) -> str:
     return " ".join(text.lower().split())
 

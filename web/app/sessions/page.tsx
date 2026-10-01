@@ -10,6 +10,8 @@ const STATUS_STYLE: Record<string, string> = {
   rejected: "bg-[color:var(--bad)]/15 text-[color:var(--bad)]",
   excluded: "bg-zinc-500/15 text-muted",
   none: "bg-zinc-500/15 text-muted",
+  "Capturing...": "bg-accent/15 text-accent",
+  Skipped: "bg-zinc-500/15 text-muted",
 };
 
 function formatType(type: string | null): string {

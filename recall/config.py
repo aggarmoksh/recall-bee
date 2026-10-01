@@ -18,6 +18,11 @@ class Settings:
     aws_region: str
     timezone: str
     recall_profile: str
+    # v4 pull-with-nudges model (AGENT.md, Phase 5C)
+    active_window: str  # "HH:MM-HH:MM", may wrap past midnight
+    daily_quota: int
+    day_reset: str  # "HH:MM" local
+    max_stings: int
 
 
 def load_settings() -> Settings:
@@ -32,10 +37,16 @@ def load_settings() -> Settings:
         # pass through this dataclass or any of our own logging paths.
         aws_region=os.environ.get("AWS_REGION", "us-east-1"),
         timezone=os.environ.get("TIMEZONE", "America/Los_Angeles"),
-        # Dispatch pacing profile (AGENT.md "Loop policy"): "normal" or "dense".
-        # Validated against recall.dispatch.PROFILES at the point of use, not
-        # here, so an invalid value fails loudly where it actually matters.
+        # Kept only for recall.dispatch's pure functions (active_profile(),
+        # compute_next_alarm()) which Phase 5C leaves in place but unused by
+        # the live daemon -- the v4 mini-session model (recall/session.py)
+        # replaces timed dispatch entirely. Flagged to the advisor; not
+        # read by recall.session or recall.stings.
         recall_profile=os.environ.get("RECALL_PROFILE", "normal"),
+        active_window=os.environ.get("ACTIVE_WINDOW", "18:00-00:00"),
+        daily_quota=int(os.environ.get("DAILY_QUOTA", "6")),
+        day_reset=os.environ.get("DAY_RESET", "04:00"),
+        max_stings=int(os.environ.get("MAX_STINGS", "3")),
     )
 
 

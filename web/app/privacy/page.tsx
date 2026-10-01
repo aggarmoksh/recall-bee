@@ -13,7 +13,7 @@ export default async function PrivacyPage() {
       </Reveal>
 
       <Reveal delay={80}>
-        <section className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <section className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="bounce rounded-3xl bg-yellow p-8 text-center text-yellow-foreground shadow-sm">
             <p className="text-5xl font-bold">{skippedTotal}</p>
             <p className="mt-2 text-sm opacity-80">
@@ -26,10 +26,6 @@ export default async function PrivacyPage() {
           <div className="bounce rounded-3xl bg-lavender p-8 text-center text-lavender-foreground shadow-sm">
             <p className="text-5xl font-bold">{data.excluded_sessions_count}</p>
             <p className="mt-2 text-sm opacity-80">sessions permanently excluded</p>
-          </div>
-          <div className="bounce rounded-3xl bg-surface p-8 text-center shadow-sm">
-            <p className="text-5xl font-bold">{data.questions_rejected_count}</p>
-            <p className="text-muted mt-2 text-sm">questions rejected or retired</p>
           </div>
         </section>
       </Reveal>

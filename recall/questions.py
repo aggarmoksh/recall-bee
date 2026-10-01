@@ -31,7 +31,7 @@ from datetime import datetime
 
 from sqlmodel import select
 
-from recall.db import Answer, Question, Session, Utterance, create_db_and_tables, get_session
+from recall.db import Answer, Question, Session, StartPhraseUtterance, Utterance, create_db_and_tables, get_session
 from recall.llm import get_provider
 from recall.overrides import load_excluded_sessions
 
@@ -49,10 +49,15 @@ APPROVAL_BY_SESSION_TYPE = {
 VALID_SESSION_TYPES = set(APPROVAL_BY_SESSION_TYPE)
 
 
-def _answer_window_utterance_ids(db) -> set[int]:
+def _excluded_utterance_ids(db) -> set[int]:
+    """No-self-feeding (AGENT.md): utterances inside any answer window, or
+    matched as the spoken session-start phrase, are never source material
+    for new questions."""
     ids: set[int] = set()
     for answer in db.exec(select(Answer)).all():
         ids.update(answer.utterance_ids)
+    for row in db.exec(select(StartPhraseUtterance)).all():
+        ids.add(row.utterance_id)
     return ids
 
 
@@ -64,8 +69,8 @@ def _session_utterances(db, session: Session, exclude_answer_window: bool = True
         .order_by(Utterance.spoken_at)
     ).all()
     if exclude_answer_window:
-        answer_ids = _answer_window_utterance_ids(db)
-        utterances = [u for u in utterances if u.id not in answer_ids]
+        excluded_ids = _excluded_utterance_ids(db)
+        utterances = [u for u in utterances if u.id not in excluded_ids]
     return utterances
 
 
@@ -158,6 +163,16 @@ def generate_for_session(
         utterances = _session_utterances(db, session)
         transcript_text = " ".join(u.text for u in utterances)
         if not transcript_text.strip():
+            # Phase 5C fix: mark classified even with nothing to classify, or
+            # find_closed_unclassified_sessions() re-selects this session on
+            # every poll forever (session_type stays NULL). Common case now:
+            # a session made entirely of excluded start-phrase/answer
+            # utterances (no-self-feeding strips them all, leaving nothing).
+            session.session_type = "no_content"
+            session.session_type_reason = "No utterances left after start-phrase/answer-window exclusion"
+            session.approval_status = "none"
+            db.add(session)
+            db.commit()
             return []
 
         conversation_id = session.conversation_ids[0] if session.conversation_ids else None

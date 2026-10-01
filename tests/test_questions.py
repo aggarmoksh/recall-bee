@@ -303,6 +303,42 @@ def test_answer_window_utterances_excluded_from_transcript(db_engine, monkeypatc
     assert "genuine new lecture content" in captured_transcript["text"]
 
 
+def test_session_with_only_excluded_utterances_marked_no_content_not_left_null(db_engine, monkeypatch):
+    """Phase 5C fix: a session made entirely of self-fed/excluded utterances
+    (e.g. a spoken answer that opened its own Session row) must still get
+    session_type set to something non-NULL, or recall.run's
+    find_closed_unclassified_sessions() re-selects it forever."""
+    with DBSession(db_engine) as db:
+        db.add(Conversation(id=1))
+        db.add_all([_u(1, "the whole answer, nothing else", 0)])
+        session = SessionModel(start_at=BASE, end_at=BASE, conversation_ids=[1])
+        db.add(session)
+        db.commit()
+        db.refresh(session)
+        session_id = session.id
+
+        q = Question(conversation_id=1, text="Q", expected_answer="A", source_excerpt="...")
+        db.add(q)
+        db.commit()
+        db.refresh(q)
+        dispatch = Dispatch(question_id=q.id, bee_todo_id=1, alarm_at=BASE)
+        db.add(dispatch)
+        db.commit()
+        db.refresh(dispatch)
+        db.add(Answer(dispatch_id=dispatch.id, raw_text="the whole answer, nothing else", utterance_ids=[1]))
+        db.commit()
+
+    _patch(monkeypatch, db_engine, _FakeProvider("lecture_study"))
+    questions = generate_for_session(session_id, n=1)
+
+    assert questions == []
+    with DBSession(db_engine) as db:
+        session = db.get(SessionModel, session_id)
+        assert session.session_type == "no_content"
+        assert session.session_type is not None
+        assert session.approval_status == "none"
+
+
 def test_set_type_override_changes_classification(db_engine, seeded_session, monkeypatch):
     monkeypatch.setattr("recall.questions.get_session", lambda: DBSession(db_engine))
     retired = set_type(seeded_session, "casual")

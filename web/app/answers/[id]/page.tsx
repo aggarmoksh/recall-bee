@@ -71,11 +71,18 @@ export default async function AnswerPage({ params }: PageProps<"/answers/[id]">)
         </div>
       </Reveal>
 
-      {detail.feedback_text && (
+      {detail.feedback && (
         <Reveal delay={140}>
           <section className="bounce rounded-3xl bg-surface p-6 shadow-sm">
-            <h2 className="text-muted mb-2 text-sm font-semibold uppercase tracking-wide">Sent to your wrist</h2>
-            <p className="text-lg">{detail.feedback_text}</p>
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-muted text-sm font-semibold uppercase tracking-wide">Sent to your wrist</h2>
+              {detail.hint_in_notification !== null && (
+                <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${detail.hint_in_notification ? "bg-accent/15 text-accent" : "bg-zinc-500/15 text-muted"}`}>
+                  {detail.hint_in_notification ? "hint included" : "no hint"}
+                </span>
+              )}
+            </div>
+            <p className="text-lg">{detail.feedback}</p>
           </section>
         </Reveal>
       )}

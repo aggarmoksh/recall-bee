@@ -19,6 +19,12 @@ function buildChartData(series: MasteryResponse["retention_series"]) {
   return Array.from(byReview.values()).sort((a, b) => (a.review_number as number) - (b.review_number as number));
 }
 
+function statusPillClass(label: string): string {
+  if (label === "Missed, not counted against you") return "bg-zinc-500/15 text-muted";
+  if (label === "Capturing...") return "bg-accent/15 text-accent";
+  return "bg-zinc-500/15 text-muted";
+}
+
 export default function ProgressPage() {
   const [data, setData] = useState<MasteryResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -43,24 +49,41 @@ export default function ProgressPage() {
         <>
           <Reveal delay={80}>
             <section>
-              <h2 className="mb-4 text-xl font-semibold">Mastery by topic</h2>
-              {data.topics.length === 0 ? (
+              <h2 className="mb-4 text-xl font-semibold">Mastery by session</h2>
+              {data.sessions.length === 0 ? (
                 <div className="rounded-3xl border border-border bg-surface py-20 text-center shadow-sm">
-                  <p className="text-muted text-lg">No graded answers yet -- topics will appear here once questions have been answered.</p>
+                  <p className="text-muted text-lg">No graded answers yet -- sessions will appear here once questions have been answered.</p>
                 </div>
               ) : (
                 <ul className="flex flex-col gap-3">
-                  {data.topics.map((t) => (
-                    <li key={t.topic} className="bounce flex items-center justify-between gap-4 rounded-2xl bg-surface px-6 py-4 shadow-sm hover:shadow-lg">
-                      <span className="text-lg font-medium">{t.topic}</span>
-                      <span className="text-muted text-sm">{t.question_count} question{t.question_count === 1 ? "" : "s"}</span>
-                      {t.average_latest_quality === null ? (
-                        <span className="rounded-full bg-zinc-500/15 px-3 py-1 text-sm font-medium text-muted">not yet answered</span>
-                      ) : (
-                        <span className="rounded-full bg-accent/15 px-3 py-1 text-sm font-medium text-accent">
-                          {t.average_latest_quality.toFixed(1)}/5
+                  {data.sessions.map((s) => (
+                    <li key={s.session_id} className="bounce rounded-2xl bg-surface px-6 py-5 shadow-sm hover:shadow-lg">
+                      <div className="flex items-center justify-between gap-4">
+                        <span className="text-lg font-medium">
+                          {s.label}, {s.question_count} question{s.question_count === 1 ? "" : "s"}
                         </span>
-                      )}
+                        {s.average_quality === null ? (
+                          <span className="shrink-0 rounded-full bg-zinc-500/15 px-3 py-1 text-sm font-medium text-muted">not yet answered</span>
+                        ) : (
+                          <span className="shrink-0 rounded-full bg-accent/15 px-3 py-1 text-sm font-medium text-accent">
+                            {s.average_quality.toFixed(1)}/5
+                          </span>
+                        )}
+                      </div>
+                      <ul className="mt-3 flex flex-col gap-2 border-t border-border pt-3">
+                        {s.questions.map((q) => (
+                          <li key={q.question_id} className="flex items-center justify-between gap-4 text-sm">
+                            <span className="flex-1 truncate text-muted">{q.text}</span>
+                            {q.status_label ? (
+                              <span className={`shrink-0 rounded-full px-2.5 py-0.5 font-medium ${statusPillClass(q.status_label)}`}>
+                                {q.status_label}
+                              </span>
+                            ) : q.latest_quality !== null ? (
+                              <span className="shrink-0 rounded-full bg-accent/10 px-2.5 py-0.5 font-medium text-accent">{q.latest_quality}/5</span>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
                     </li>
                   ))}
                 </ul>

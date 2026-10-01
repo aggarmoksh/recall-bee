@@ -5,8 +5,8 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session as DBSession
 from sqlmodel import SQLModel, create_engine
 
-from recall.api import _window_status, app
-from recall.db import Answer, Conversation, Dispatch, Question
+from recall.api import app
+from recall.db import Answer, Conversation, Dispatch, Question, SessionRun
 from recall.db import Session as SessionModel
 
 BASE = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
@@ -18,6 +18,7 @@ def db_engine(tmp_path, monkeypatch):
     SQLModel.metadata.create_all(engine)
     monkeypatch.setattr("recall.api._readonly_engine", engine)
     monkeypatch.setattr("recall.questions.get_session", lambda: DBSession(engine))
+    monkeypatch.setattr("recall.scoring.get_session", lambda: DBSession(engine))
     return engine
 
 
@@ -26,7 +27,7 @@ def client(db_engine):
     return TestClient(app)
 
 
-def _seed_basic(engine, *, approval_status="approved", session_type="lecture_study"):
+def _seed_basic(engine, *, approval_status="approved", session_type="lecture_study", topic="Optics"):
     with DBSession(engine) as db:
         db.add(Conversation(id=1))
         session = SessionModel(
@@ -48,7 +49,7 @@ def _seed_basic(engine, *, approval_status="approved", session_type="lecture_stu
             expected_answer="Rayleigh scattering at sunset.",
             rubric=["mentions scattering", "mentions wavelength", "mentions sunset angle"],
             source_excerpt="the sky turns red at sunset because of scattering",
-            topic="Optics",
+            topic=topic,
             active=True,
         )
         db.add(q)
@@ -57,9 +58,9 @@ def _seed_basic(engine, *, approval_status="approved", session_type="lecture_stu
         return session.id, q.id
 
 
-def _seed_dispatch_and_answer(engine, question_id, *, alarm_at, verdict="correct", quality=5, rubric_points_hit=None, matched_at=None, bee_todo_id=1):
+def _seed_dispatch_and_answer(engine, question_id, *, alarm_at, verdict="correct", quality=5, rubric_points_hit=None, matched_at=None, bee_todo_id=1, session_run_id=None):
     with DBSession(engine) as db:
-        d = Dispatch(question_id=question_id, bee_todo_id=bee_todo_id, alarm_at=alarm_at, status="pending", dispatched_at=alarm_at)
+        d = Dispatch(question_id=question_id, bee_todo_id=bee_todo_id, alarm_at=alarm_at, status="pending", dispatched_at=alarm_at, session_run_id=session_run_id)
         db.add(d)
         db.commit()
         db.refresh(d)
@@ -81,44 +82,59 @@ def _seed_dispatch_and_answer(engine, question_id, *, alarm_at, verdict="correct
 # --- /api/today ---
 
 
-def test_today_reports_profile_and_dispatch_count(client, db_engine):
-    # dispatched_at must be "now", not an offset -- dispatches_today() uses
-    # LOCAL day boundaries (Phase 4B fix), so "now minus 1h" can land in
-    # yesterday's local day and make this test flaky right after local
-    # midnight. "now" itself is always in today's local day by definition.
+def test_today_idle_with_no_active_session(client, db_engine):
     session_id, question_id = _seed_basic(db_engine)
     _seed_dispatch_and_answer(db_engine, question_id, alarm_at=datetime.now(UTC))
 
     resp = client.get("/api/today")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["profile"] in ("normal", "dense")
-    assert body["dispatches_today"] == 1
-    assert body["open_dispatch"] is None
+    assert body["daily_quota"] == 6
+    assert body["session"]["state"] == "idle"
     assert len(body["recent_answers"]) == 1
     assert body["recent_answers"][0]["verdict"] == "correct"
 
 
-def test_today_shows_open_dispatch_with_window_status(client, db_engine):
+def test_today_shows_in_session_state_with_current_question(client, db_engine):
     session_id, question_id = _seed_basic(db_engine)
     now = datetime.now(UTC)
     with DBSession(db_engine) as db:
-        d = Dispatch(question_id=question_id, bee_todo_id=99, alarm_at=now + timedelta(minutes=5), status="pending", dispatched_at=now)
+        run = SessionRun(trigger="tick", status="active", started_at=now, questions_asked=1)
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+        d = Dispatch(question_id=question_id, bee_todo_id=99, alarm_at=now + timedelta(minutes=5), status="pending", dispatched_at=now, session_run_id=run.id)
         db.add(d)
         db.commit()
 
     resp = client.get("/api/today")
     body = resp.json()
-    assert body["open_dispatch"] is not None
-    assert body["open_dispatch"]["question_id"] == question_id
-    assert body["open_dispatch"]["window_status"] == "waiting"
+    assert body["session"]["state"] == "in_session"
+    assert body["session"]["questions_asked"] == 1
+    assert body["session"]["current_question"]["question_id"] == question_id
 
 
-def test_window_status_transitions():
-    alarm_at = BASE
-    assert _window_status(alarm_at, alarm_at - timedelta(seconds=10)) == "waiting"
-    assert _window_status(alarm_at, alarm_at + timedelta(seconds=10)) == "listening"
-    assert _window_status(alarm_at, alarm_at + timedelta(seconds=301)) == "grading"
+def test_today_includes_report_card_for_a_session_ended_today(client, db_engine):
+    session_id, question_id = _seed_basic(db_engine)
+    now = datetime.now(UTC)
+    with DBSession(db_engine) as db:
+        db.add(SessionRun(trigger="tick", status="completed", started_at=now - timedelta(minutes=5), ended_at=now, questions_asked=3, questions_answered=3))
+        db.commit()
+
+    resp = client.get("/api/today")
+    body = resp.json()
+    assert body["report_card"] is not None
+    assert body["report_card"]["questions_asked"] == 3
+    assert body["report_card"]["questions_answered"] == 3
+
+
+def test_today_no_report_card_when_nothing_ended_yet(client, db_engine):
+    with DBSession(db_engine) as db:
+        db.add(Conversation(id=1))
+        db.commit()
+
+    resp = client.get("/api/today")
+    assert resp.json()["report_card"] is None
 
 
 # --- /api/answers/{id} ---
@@ -150,15 +166,21 @@ def test_answer_detail_includes_rubric_hit_miss_and_source(client, db_engine):
     assert rubric["mentions sunset angle"] is False
 
 
-def test_answer_detail_feedback_text_matches_wrist_format(client, db_engine):
+def test_answer_detail_includes_raw_feedback_and_hint_flag(client, db_engine):
     session_id, question_id = _seed_basic(db_engine)
     _, answer_id = _seed_dispatch_and_answer(
         db_engine, question_id, alarm_at=BASE, verdict="partial", quality=3, rubric_points_hit=["mentions scattering"]
     )
+    with DBSession(db_engine) as db:
+        a = db.get(Answer, answer_id)
+        a.hint_in_notification = True
+        db.add(a)
+        db.commit()
 
     resp = client.get(f"/api/answers/{answer_id}")
     body = resp.json()
-    assert body["feedback_text"] == "Recall ✓ 1/3: Missed the wavelength detail."
+    assert body["feedback"] == "Missed the wavelength detail."
+    assert body["hint_in_notification"] is True
 
 
 def test_answer_detail_404_for_missing_id(client, db_engine):
@@ -166,21 +188,25 @@ def test_answer_detail_404_for_missing_id(client, db_engine):
     assert resp.status_code == 404
 
 
-# --- /api/mastery ---
+# --- /api/mastery (Phase 5C fix: grouped by source session) ---
 
 
-def test_mastery_reports_per_topic_counts_and_quality(client, db_engine):
-    session_id, question_id = _seed_basic(db_engine)
+def test_mastery_groups_by_session_with_questions_underneath(client, db_engine):
+    session_id, question_id = _seed_basic(db_engine, topic="Optics")
     _seed_dispatch_and_answer(db_engine, question_id, alarm_at=BASE, verdict="incorrect", quality=1, bee_todo_id=1)
     _seed_dispatch_and_answer(db_engine, question_id, alarm_at=BASE + timedelta(days=1), verdict="correct", quality=5, bee_todo_id=2)
 
     resp = client.get("/api/mastery")
     body = resp.json()
-    assert len(body["topics"]) == 1
-    topic = body["topics"][0]
-    assert topic["topic"] == "Optics"
-    assert topic["question_count"] == 1
-    assert topic["average_latest_quality"] == 5  # latest answer, not the average of all answers
+    assert len(body["sessions"]) == 1
+    session_row = body["sessions"][0]
+    assert session_row["session_id"] == session_id
+    assert session_row["label"] == "Optics"
+    assert session_row["question_count"] == 1
+    assert session_row["average_quality"] == 5  # latest answer, not the average of all answers
+    assert len(session_row["questions"]) == 1
+    assert session_row["questions"][0]["question_id"] == question_id
+    assert session_row["questions"][0]["latest_quality"] == 5
 
     assert len(body["retention_series"]) == 2  # two distinct days
 
@@ -191,7 +217,32 @@ def test_mastery_excludes_code_truncated_answers(client, db_engine):
 
     resp = client.get("/api/mastery")
     body = resp.json()
-    assert body["topics"][0]["average_latest_quality"] is None  # the only answer is excluded
+    assert body["sessions"][0]["average_quality"] is None  # the only answer is excluded
+
+
+def test_mastery_labels_no_answer_question_as_missed_not_counted(client, db_engine):
+    session_id, question_id = _seed_basic(db_engine)
+    _seed_dispatch_and_answer(db_engine, question_id, alarm_at=BASE, verdict="no_answer", quality=0, bee_todo_id=1)
+
+    resp = client.get("/api/mastery")
+    body = resp.json()
+    assert body["sessions"][0]["questions"][0]["status_label"] == "Missed, not counted against you"
+
+
+def test_mastery_labels_unclassified_session_as_capturing(client, db_engine):
+    with DBSession(db_engine) as db:
+        db.add(Conversation(id=1))
+        session = SessionModel(start_at=BASE, end_at=BASE, conversation_ids=[1])  # session_type still None
+        db.add(session)
+        db.commit()
+        db.refresh(session)
+        q = Question(conversation_id=1, session_id=session.id, text="Q", expected_answer="A", rubric=["a"], source_excerpt="...", topic="X")
+        db.add(q)
+        db.commit()
+
+    resp = client.get("/api/mastery")
+    body = resp.json()
+    assert body["sessions"][0]["questions"][0]["status_label"] == "Capturing..."
 
 
 # --- /api/sessions ---
@@ -221,10 +272,29 @@ def test_sessions_reports_excluded_status(client, db_engine, monkeypatch):
     assert body["sessions"][0]["status"] == "excluded"
 
 
-# --- /api/privacy ---
+def test_sessions_reports_skipped_for_casual_and_personal(client, db_engine):
+    session_id, _ = _seed_basic(db_engine, session_type="casual", approval_status="none")
+
+    resp = client.get("/api/sessions")
+    body = resp.json()
+    assert body["sessions"][0]["status"] == "Skipped"
 
 
-def test_privacy_reports_skip_and_rejection_counts(client, db_engine):
+def test_sessions_reports_capturing_for_unclassified(client, db_engine):
+    with DBSession(db_engine) as db:
+        db.add(Conversation(id=1))
+        db.add(SessionModel(start_at=BASE, end_at=BASE, conversation_ids=[1]))
+        db.commit()
+
+    resp = client.get("/api/sessions")
+    body = resp.json()
+    assert body["sessions"][0]["status"] == "Capturing..."
+
+
+# --- /api/privacy (Phase 5C fix: only privacy exclusions) ---
+
+
+def test_privacy_reports_skip_counts_only_not_question_rejections(client, db_engine):
     session_id, question_id = _seed_basic(db_engine, session_type="lecture_study")
     with DBSession(db_engine) as db:
         db.add(SessionModel(start_at=BASE + timedelta(hours=1), end_at=BASE + timedelta(hours=2), conversation_ids=[1], session_type="casual", approval_status="none"))
@@ -235,7 +305,7 @@ def test_privacy_reports_skip_and_rejection_counts(client, db_engine):
     resp = client.get("/api/privacy")
     body = resp.json()
     assert body["sessions_skipped_by_type"] == {"casual": 1, "personal": 1}
-    assert body["questions_rejected_count"] == 1
+    assert "questions_rejected_count" not in body
     assert len(body["rules"]) > 0
 
 

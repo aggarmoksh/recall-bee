@@ -153,3 +153,39 @@ def test_custom_tail_close_and_hard_cap_params():
     result = match_answer_window(utterances, alarm_at=alarm_at, tail_close_s=10, hard_cap_s=60)
     # 12s gap exceeds a tightened 10s tail-close
     assert [u.id for u in result.utterances] == [1]
+
+
+# --- detects_session_start (Phase 5B gate, variant A) ---
+
+
+def test_detects_session_start_single_utterance():
+    from recall.matcher import detects_session_start
+
+    assert detects_session_start(["Hey Bee, let's do a Recall session, I'm ready for my questions."])
+
+
+def test_detects_session_start_split_across_two_utterances():
+    """STT split the phrase in every Phase 5B trial -- detection must
+    look across the combined recent window, not one utterance alone."""
+    from recall.matcher import detects_session_start
+
+    assert detects_session_start(["Hey B, let's do a recall session.", "I am ready for my questions."])
+
+
+def test_detects_session_start_false_when_recall_missing():
+    """Phase 5B trial 9: STT dropped the word 'Recall' entirely."""
+    from recall.matcher import detects_session_start
+
+    assert not detects_session_start(["Okay, let's do a session.", "I'm ready for my questions."])
+
+
+def test_detects_session_start_false_on_unrelated_speech():
+    from recall.matcher import detects_session_start
+
+    assert not detects_session_start(["I think I left my keys at the office."])
+
+
+def test_detects_session_start_false_on_empty_window():
+    from recall.matcher import detects_session_start
+
+    assert not detects_session_start([])
