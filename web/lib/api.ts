@@ -29,6 +29,7 @@ export type SessionState =
 export type ReportCard = {
   questions_asked: number;
   questions_answered: number;
+  questions_processing: number;
   ended_at: string;
 };
 
@@ -98,6 +99,15 @@ export type PrivacyResponse = {
   rules: string[];
 };
 
+// Per-entry shape is unconfirmed -- this account's list is empty, and the
+// field names aren't documented anywhere (see FRICTION_LOG, Phase 5E Step
+// 5). Rendered generically rather than assuming specific keys.
+export type ExternalAccessEntry = Record<string, unknown>;
+export type ExternalAccessResponse = {
+  external_access: ExternalAccessEntry[];
+  next_cursor: string | null;
+};
+
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, { cache: "no-store" });
   if (!res.ok) {
@@ -119,6 +129,7 @@ export const api = {
   mastery: () => get<MasteryResponse>("/api/mastery"),
   sessions: () => get<SessionsResponse>("/api/sessions"),
   privacy: () => get<PrivacyResponse>("/api/privacy"),
+  externalAccess: () => get<ExternalAccessResponse>("/api/privacy/external-access"),
   approveSession: (id: number) => post(`/api/sessions/${id}/approve`),
   rejectSession: (id: number) => post(`/api/sessions/${id}/reject`),
   rejectQuestion: (id: number) => post(`/api/questions/${id}/reject`),

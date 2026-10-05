@@ -114,6 +114,33 @@ def test_today_shows_in_session_state_with_current_question(client, db_engine):
     assert body["session"]["current_question"]["question_id"] == question_id
 
 
+def test_today_current_question_skips_a_deferred_dispatch(client, db_engine):
+    """A deferred (status='processing') dispatch has no Answer yet either,
+    same as the real open one -- must not be shown as the current question
+    (regression: _active_session_payload used to match on 'no Answer'
+    alone, which an older deferred dispatch also satisfies)."""
+    session_id, question_id = _seed_basic(db_engine)
+    now = datetime.now(UTC)
+    with DBSession(db_engine) as db:
+        q2 = Question(conversation_id=1, session_id=session_id, text="Q2", expected_answer="A", rubric=["a"], source_excerpt="...")
+        db.add(q2)
+        db.commit()
+        db.refresh(q2)
+        q2_id = q2.id
+
+        run = SessionRun(trigger="tick", status="active", started_at=now - timedelta(minutes=3), questions_asked=2)
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+        db.add(Dispatch(question_id=question_id, bee_todo_id=50, alarm_at=now - timedelta(minutes=3), status="processing", dispatched_at=now - timedelta(minutes=3), session_run_id=run.id))
+        db.add(Dispatch(question_id=q2_id, bee_todo_id=51, alarm_at=now, status="pending", dispatched_at=now, session_run_id=run.id))
+        db.commit()
+
+    resp = client.get("/api/today")
+    body = resp.json()
+    assert body["session"]["current_question"]["question_id"] == q2_id
+
+
 def test_today_includes_report_card_for_a_session_ended_today(client, db_engine):
     session_id, question_id = _seed_basic(db_engine)
     now = datetime.now(UTC)
@@ -126,6 +153,70 @@ def test_today_includes_report_card_for_a_session_ended_today(client, db_engine)
     assert body["report_card"] is not None
     assert body["report_card"]["questions_asked"] == 3
     assert body["report_card"]["questions_answered"] == 3
+
+
+def test_today_report_card_counts_still_processing_dispatches(client, db_engine):
+    """Phase 5E Step 3: a deferred (not-yet-graded) dispatch counts toward
+    'still processing' on the dashboard, separate from questions_answered."""
+    session_id, question_id = _seed_basic(db_engine)
+    now = datetime.now(UTC)
+    with DBSession(db_engine) as db:
+        run = SessionRun(trigger="tick", status="paused", started_at=now - timedelta(minutes=5), ended_at=now, questions_asked=2, questions_answered=0)
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+        db.add(Dispatch(question_id=question_id, bee_todo_id=77, alarm_at=now - timedelta(minutes=3), status="processing", dispatched_at=now - timedelta(minutes=3), session_run_id=run.id))
+        db.commit()
+
+    resp = client.get("/api/today")
+    body = resp.json()
+    assert body["report_card"] is not None
+    assert body["report_card"]["questions_processing"] == 1
+
+
+class _FakeExternalAccessClient:
+    def __init__(self, response):
+        self._response = response
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        pass
+
+    def _request(self, method, path, **kwargs):
+        return self._response
+
+
+class _FakeExternalAccessProxy:
+    def __init__(self, port=None):
+        self.base_url = "http://fake"
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        pass
+
+
+def test_external_access_proxies_bee_response(client, monkeypatch):
+    fake_response = {"external_access": [{"id": 1, "name": "Some Service"}], "next_cursor": None}
+    monkeypatch.setattr("recall.api.BeeProxy", lambda port=None: _FakeExternalAccessProxy())
+    monkeypatch.setattr("recall.api.BeeClient", lambda base_url: _FakeExternalAccessClient(fake_response))
+
+    resp = client.get("/api/privacy/external-access")
+    assert resp.status_code == 200
+    assert resp.json() == fake_response
+
+
+def test_external_access_returns_502_on_bee_failure(client, monkeypatch):
+    def _raise(port=None):
+        raise RuntimeError("bee proxy did not become ready")
+
+    monkeypatch.setattr("recall.api.BeeProxy", _raise)
+
+    resp = client.get("/api/privacy/external-access")
+    assert resp.status_code == 502
 
 
 def test_today_no_report_card_when_nothing_ended_yet(client, db_engine):

@@ -107,6 +107,9 @@ export default function TodayPage() {
                 <p className="text-2xl font-semibold leading-snug">
                   {today.report_card.questions_answered} of {today.report_card.questions_asked} answered
                 </p>
+                {today.report_card.questions_processing > 0 && (
+                  <p className="mt-1 text-sm opacity-80">{today.report_card.questions_processing} still processing</p>
+                )}
                 <p className="mt-2 text-sm opacity-80">
                   Session ended {new Date(today.report_card.ended_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                 </p>

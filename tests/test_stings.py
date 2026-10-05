@@ -66,6 +66,17 @@ def db_engine(tmp_path, monkeypatch, bee_store):
     store, next_id_box = bee_store
     monkeypatch.setattr("recall.stings.BeeProxy", lambda port=None: _FakeBeeProxy())
     monkeypatch.setattr("recall.stings.BeeClient", lambda base_url: _FakeBeeClient(store, next_id_box))
+
+    # Pin ACTIVE_WINDOW explicitly rather than relying on whatever the real
+    # .env happens to hold -- these tests' slot-timing assumptions (e.g.
+    # "start" at 18:00) only hold for the 18:00-00:00 default, and the
+    # operator has since changed the real .env to 13:00-03:00 for live
+    # testing, which silently broke `test_end_slot_fires_90min_before_window_end`
+    # without touching any test logic. Same lesson as the local-day-boundary
+    # bugs: a test must never depend on ambient config it doesn't control.
+    import recall.stings as stings_module
+
+    monkeypatch.setattr(stings_module, "settings", replace(stings_module.settings, active_window="18:00-00:00"))
     return engine
 
 

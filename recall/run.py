@@ -1,17 +1,26 @@
 """Daemon: python -m recall.run
 
-v4 pull-with-nudges model (AGENT.md, Phase 5C). Three concurrent loops:
+v4 pull-with-nudges model (AGENT.md, Phase 5C/5E). Four concurrent loops:
 
 - the live stream (recall.ingest.consume_stream_live) -- ingests
-  utterances in real time AND buffers a short rolling window to detect
-  the spoken session-start phrase (variant A) as it's said.
+  utterances in real time, buffers a short rolling window to detect the
+  spoken session-start phrase (variant A) as it's said, and immediately
+  fetches a conversation's final transcript the instant its own
+  update-conversation event reports a no-longer-CAPTURING/PROCESSING state.
+- a live poll loop (~5s, recall.ingest.poll_live_conversations): the
+  realtime-transcription poller (Phase 5D/5E) that makes the 15s-quiet
+  answer-done pacing in recall.session viable -- the old 60s poll_once
+  cycle is far too slow to notice speech has stopped within 15s.
 - a fast loop (~10s): polls the ready-todo for a tick, reacts to a
   just-detected spoken start, and advances an active mini-session
-  (grades a closed answer window, dispatches the next question, or ends
-  the session) -- kept fast so a session feels back-to-back, not laggy.
+  (grades a closed answer window, defers a silent one, dispatches the
+  next question, or ends/pauses the session) -- kept fast so a session
+  feels back-to-back, not laggy.
 - a slow loop (~60s): ingest poll, session classification for newly-
   closed sessions (+ a post-lecture sting), time-based stings, old
-  feedback/sting-todo cleanup, and sleep/wake recovery.
+  feedback/sting-todo cleanup, sleep/wake recovery, and grading any
+  dispatches deferred by the session loop once their final transcript
+  becomes available.
 
 --dry-run: does everything except POST/DELETE todos and LLM calls.
 
@@ -34,12 +43,12 @@ from recall.bee.client import BeeClient
 from recall.bee.process import BeeProxy, find_bee_processes
 from recall.config import settings
 from recall.db import Session, StartPhraseUtterance, create_db_and_tables, get_session
-from recall.ingest import consume_stream_live, poll_once
+from recall.ingest import consume_stream_live, poll_live_conversations, poll_once
 from recall.matcher import detects_session_start
 from recall.overrides import load_excluded_sessions
 from recall.questions import generate_for_session
 from recall.ready_todo import check_and_recreate
-from recall.session import advance, due_questions, recover, start_session
+from recall.session import advance, due_questions, grade_pending_dispatches, recover, start_session
 from recall.stings import cleanup_old_stings, maybe_send_stings, send_post_lecture_sting
 
 LOG_PATH = Path(__file__).resolve().parent.parent / "logs" / "recall-run.log"
@@ -57,10 +66,23 @@ _pending_spoken_start: list[int] | None = None  # utterance ids that triggered d
 
 
 def _log_line(message: str) -> None:
+    """Writes directly to LOG_PATH only -- no print()/stdout duplication.
+    Phase 5E Step 6 found a real Windows bug from having both: `print()`
+    goes through Python's own block-buffered stdout (not line-buffered,
+    since stdout isn't a tty once shell-redirected to a file), held in an
+    internal buffer and flushed late to whatever byte offset THAT handle's
+    own position tracking thinks is current -- a position that drifts out
+    of sync with this function's own `open(path, "a")` writes, since the
+    two are independent OS file handles on the same path. The practical
+    symptom: old lines reappeared via `tail -f` minutes after being
+    written, and a live session-start event was indistinguishable from a
+    stale flush of an hours-old one. The `open(..., "a")` write alone is
+    already reliable (every "ingest:"/"found pre-existing" line arrived
+    immediately and in order) -- dropping the redundant, buggy print()
+    path removes the race instead of trying to keep both in sync."""
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(UTC).isoformat(timespec="seconds")
     line = f"{timestamp}  {message}"
-    print(line)
     with open(LOG_PATH, "a", encoding="utf-8") as f:
         f.write(line + "\n")
 
@@ -75,13 +97,24 @@ def find_closed_unclassified_sessions(db, now: datetime) -> list[Session]:
 
 
 def _on_new_utterance(utterance_id: int, text: str, spoken_at: datetime | None) -> None:
-    """Called synchronously from the stream consumer for every newly
-    ingested utterance (pure in-memory bookkeeping, no I/O -- safe to run
-    inline in the async stream loop). Buffers a short rolling window and
-    flags a spoken-start detection for the fast loop to react to."""
+    """Called synchronously for every newly ingested utterance, from
+    whichever path saw it first (stream, 5s live poller, or the 60s
+    poll_once fallback -- Phase 5E Step 2). Buffers a short rolling
+    window and flags a spoken-start detection for the fast loop to react
+    to.
+
+    The window is keyed on ARRIVAL time (when this callback runs), not
+    `spoken_at` (when the words were actually said) -- Phase 5E Step 6
+    found this the hard way: with realtime-transcription latency
+    routinely 25-40s+ (Phase 5D) and no upper bound via the 60s poll_once
+    fallback, an utterance keyed on spoken_at could already be older than
+    START_PHRASE_WINDOW_S the instant it arrives, pruning it from the
+    buffer before detection ever runs on it -- silently killing every
+    spoken start whose ingestion took longer than 15s, which is the
+    common case now, not an edge case."""
     global _pending_spoken_start
     now = datetime.now(UTC)
-    _recent_utterances.append((utterance_id, text, spoken_at or now))
+    _recent_utterances.append((utterance_id, text, now))
     cutoff = now - timedelta(seconds=START_PHRASE_WINDOW_S)
     while _recent_utterances and _recent_utterances[0][2] < cutoff:
         _recent_utterances.popleft()
@@ -142,7 +175,7 @@ def slow_tick(dry_run: bool = False) -> None:
     now = datetime.now(UTC)
 
     with BeeProxy(port=settings.bee_proxy_port) as proxy, BeeClient(proxy.base_url) as client:
-        counts = poll_once(client)
+        counts = poll_once(client, on_new_utterance=_on_new_utterance)
     _log_line(f"ingest: {counts['conversations_touched']} conversation(s) touched, {counts['utterances_added']} utterance(s) added")
 
     db = get_session()
@@ -180,6 +213,10 @@ def slow_tick(dry_run: bool = False) -> None:
     sting_count = cleanup_old_stings(now=now)
     if sting_count:
         _log_line(f"cleaned up {sting_count} sting todo(s) older than 12h")
+
+    graded = grade_pending_dispatches(now=now)
+    for g in graded:
+        _log_line(f"deferred dispatch graded: question {g['question_id']} verdict={g['verdict']}")
 
 
 def run_once(dry_run: bool = False) -> None:
@@ -224,9 +261,25 @@ async def run_daemon(dry_run: bool = False) -> None:
                 _log_line(f"slow_tick FAILED: {e}")
             await asyncio.sleep(SLOW_LOOP_INTERVAL_S)
 
+    async def live_poll_loop(client: BeeClient):
+        try:
+            await poll_live_conversations(client, on_new_utterance=_on_new_utterance)
+        except Exception as e:
+            _log_line(f"live_poll_loop FAILED: {e}")
+
     # consume_stream_live() (recall.ingest) already tree-kills its own bee
     # stream subprocess in a finally block, including under cancellation.
-    await asyncio.gather(consume_stream_live(on_new_utterance=_on_new_utterance), fast_loop(), slow_loop())
+    # live_proxy/live_client (Phase 5E Step 1) is a second, long-lived
+    # proxy held open for the whole daemon run -- the 5s live poller can't
+    # afford to spin up a fresh `bee proxy` subprocess every tick the way
+    # fast_tick/slow_tick do for their own occasional calls.
+    with BeeProxy(port=settings.bee_proxy_port) as live_proxy, BeeClient(live_proxy.base_url) as live_client:
+        await asyncio.gather(
+            consume_stream_live(on_new_utterance=_on_new_utterance, client=live_client),
+            fast_loop(),
+            slow_loop(),
+            live_poll_loop(live_client),
+        )
 
 
 def main() -> None:

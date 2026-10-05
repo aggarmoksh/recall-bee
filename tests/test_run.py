@@ -138,16 +138,45 @@ def test_on_new_utterance_split_across_two_utterances_flags_pending(reset_run_st
     assert run_module._pending_spoken_start == [1, 2]
 
 
-def test_on_new_utterance_old_entries_fall_out_of_the_window(reset_run_state):
+def test_on_new_utterance_old_entries_fall_out_of_the_window(reset_run_state, monkeypatch):
+    """Phase 5E fix: the window is keyed on ARRIVAL time (when this
+    callback actually runs), not `spoken_at` -- with realtime-transcription
+    latency routinely 25-40s+ (Phase 5D), keying on spoken_at pruned an
+    utterance from the buffer the instant it arrived, before detection
+    ever ran on it (found live, Step 6). Simulated here via a fake clock,
+    since a real wall-clock gap is what the window now actually tracks."""
+    import recall.run as run_module
     from recall.run import START_PHRASE_WINDOW_S, _on_new_utterance
+
+    base = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+    clock = {"now": base}
+
+    class _FakeDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock["now"]
+
+    monkeypatch.setattr(run_module, "datetime", _FakeDateTime)
+
+    _on_new_utterance(1, "unrelated chatter about recall", base)
+    clock["now"] = base + timedelta(seconds=START_PHRASE_WINDOW_S + 5)
+    _on_new_utterance(2, "something about a session later", clock["now"])
+
+    # "recall" arrived long enough ago (by wall clock) to fall out of the window
+    assert run_module._pending_spoken_start is None
+
+
+def test_on_new_utterance_detects_even_when_spoken_at_is_already_old(reset_run_state):
+    """The flip side of the fix above: an utterance whose spoken_at is
+    already minutes in the past (slow transcription) must still be
+    detected, since windowing no longer depends on spoken_at at all."""
+    from recall.run import _on_new_utterance
     import recall.run as run_module
 
-    now = datetime.now(UTC)
-    _on_new_utterance(1, "unrelated chatter about recall", now - timedelta(seconds=START_PHRASE_WINDOW_S + 5))
-    _on_new_utterance(2, "something about a session later", now)
+    long_ago = datetime.now(UTC) - timedelta(minutes=5)
+    _on_new_utterance(1, "Hey Bee, let's do a Recall session, I'm ready for my questions.", long_ago)
 
-    # "recall" fell out of the rolling window before "session" arrived
-    assert run_module._pending_spoken_start is None
+    assert run_module._pending_spoken_start == [1]
 
 
 def test_on_new_utterance_unrelated_speech_never_flags(reset_run_state):

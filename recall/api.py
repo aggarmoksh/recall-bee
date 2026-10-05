@@ -22,6 +22,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import Session as DBSession
 from sqlmodel import create_engine, select
 
+from recall.bee.client import BeeClient
+from recall.bee.process import BeeProxy
 from recall.config import settings
 from recall.db import DB_PATH, Answer, Dispatch, Question, SessionRun
 from recall.db import Session as SessionModel
@@ -66,7 +68,11 @@ def health() -> dict:
 
 
 def _active_session_payload(db, run: SessionRun) -> dict | None:
-    dispatches = db.exec(select(Dispatch).where(Dispatch.session_run_id == run.id)).all()
+    # status == "pending" specifically, matching recall.session.open_dispatch_for
+    # -- a deferred dispatch (status "processing") also has no Answer yet
+    # but is NOT the currently-open question, and would otherwise show a
+    # stale question as "current" on the dashboard.
+    dispatches = db.exec(select(Dispatch).where(Dispatch.session_run_id == run.id).where(Dispatch.status == "pending")).all()
     open_dispatch = None
     for d in dispatches:
         if db.exec(select(Answer).where(Answer.dispatch_id == d.id)).first() is None:
@@ -118,13 +124,23 @@ def get_today() -> dict:
             )
 
         last_completed = db.exec(
-            select(SessionRun).where(SessionRun.status.in_(["completed", "ended_no_answer"])).order_by(SessionRun.ended_at.desc())
+            # "ended_no_answer" kept for historical pre-5E rows; "paused" is
+            # the current v4 status for a session that ended early on two
+            # consecutive deferred (still-processing) dispatches or a
+            # sleep/wake recovery (Phase 5E Step 3).
+            select(SessionRun).where(SessionRun.status.in_(["completed", "ended_no_answer", "paused"])).order_by(SessionRun.ended_at.desc())
         ).first()
         report_card = None
         if last_completed is not None and last_completed.ended_at is not None and _to_local(last_completed.ended_at).date() == _to_local(now).date():
+            processing_count = len(
+                db.exec(
+                    select(Dispatch).where(Dispatch.session_run_id == last_completed.id).where(Dispatch.status == "processing")
+                ).all()
+            )
             report_card = {
                 "questions_asked": last_completed.questions_asked,
                 "questions_answered": last_completed.questions_answered,
+                "questions_processing": processing_count,
                 "ended_at": last_completed.ended_at.isoformat(),
             }
 
@@ -349,6 +365,27 @@ def get_privacy() -> dict:
         }
     finally:
         db.close()
+
+
+# --- GET /api/privacy/external-access (Phase 5E Step 5) ---
+#
+# Plain proxy of GET /v1/external-access -- "external services and data
+# types that have accessed Bee data" (found only in the bee-cli source,
+# undocumented on docs.bee.computer, no CLI command exposes it). Passed
+# through as-is: it carries no personal data beyond what Bee's own API
+# already returns, so there's nothing here to filter or redact. On this
+# account the list is currently empty, so per-entry field names are
+# unconfirmed -- the frontend should render whatever keys show up rather
+# than assuming a specific shape.
+
+
+@app.get("/api/privacy/external-access")
+def get_external_access() -> dict:
+    try:
+        with BeeProxy(port=settings.bee_proxy_port) as proxy, BeeClient(proxy.base_url) as client:
+            return client._request("GET", "/v1/external-access")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"could not reach Bee: {e}") from e
 
 
 # --- writes: approve/reject (short-lived connections, same ops as the CLI) ---

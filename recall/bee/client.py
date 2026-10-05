@@ -87,25 +87,42 @@ class BeeClient:
         return self._request("GET", "/v1/conversations", params=params)
 
     def get_transcript(self, conversation_id: int, since: int | None = None) -> dict:
-        """Flattened {conversationId, transcript: [utterances]}, matching the
-        `bee conversations transcript` CLI output shape.
+        """Flattened {conversationId, transcript: [utterances], state},
+        matching the `bee conversations transcript` CLI output shape plus
+        the conversation's own state for callers that need it.
 
         There is no separate verified `/transcript` REST route (probed and got
         404 on every plausible path). This reuses the confirmed-working
-        GET /v1/conversations/{id}, which embeds the same utterances nested
-        under `transcriptions[].utterances`, and flattens them here. `since`
-        filters by `spoken_at` (ms epoch) client-side, since the endpoint
-        doesn't take it as a query param.
+        GET /v1/conversations/{id}, which embeds utterances nested under
+        `transcriptions[].utterances`.
+
+        Single-source selection (AGENT.md Loop policy, Phase 5D 2026-10-05):
+        while the conversation is CAPTURING, read ONLY the `realtime: true`
+        transcription; once it has moved on, read the non-realtime (final)
+        one. Falls back to whatever transcription exists if the preferred
+        kind is absent (e.g. mid-switchover). NEVER concatenates multiple
+        transcriptions -- doing so previously stored the same speech twice
+        under different utterance ids (see FRICTION_LOG 2026-10-01/02).
+        `since` filters by `spoken_at` (ms epoch) client-side, since the
+        endpoint doesn't take it as a query param.
         """
         data = self._request("GET", f"/v1/conversations/{conversation_id}")
         conversation = data.get("conversation", data)
+        state = conversation.get("state")
+        transcriptions = conversation.get("transcriptions") or []
+
         utterances = []
-        for transcription in conversation.get("transcriptions") or []:
-            utterances.extend(transcription.get("utterances") or [])
+        if transcriptions:
+            prefer_realtime = state == "CAPTURING"
+            chosen = next((t for t in transcriptions if bool(t.get("realtime")) == prefer_realtime), None)
+            if chosen is None:
+                chosen = transcriptions[0]
+            utterances = list(chosen.get("utterances") or [])
+
         if since is not None:
             utterances = [u for u in utterances if u.get("spoken_at", 0) >= since]
         utterances.sort(key=lambda u: u.get("spoken_at", 0))
-        return {"conversationId": conversation_id, "transcript": utterances}
+        return {"conversationId": conversation_id, "transcript": utterances, "state": state}
 
     def list_todos(self, limit: int = 20, cursor: str | None = None) -> dict:
         params = {"limit": limit}

@@ -32,14 +32,41 @@ from recall.db import Answer, Dispatch, FeedbackTodo, Question, ReviewState
 from recall.db import Session as SessionModel
 from recall.db import SessionRun, Utterance, get_session
 from recall.grading import grade_and_persist
-from recall.matcher import DEFAULT_HARD_CAP_S
+from recall.matcher import MatchResult
 from recall.matcher import Utterance as MatcherUtterance
 from recall.matcher import match_answer_window
 from recall.scoring import current_streak_days
 from recall.srs import sm2
 
-ANSWER_WINDOW_SAFETY_BUFFER_S = 30  # on top of the matcher's own hard cap
 POST_FEEDBACK_PAUSE_S = 10
+
+# Phase 5E Step 3 session pacing (AGENT.md, 2026-10-05), replacing the old
+# 60s-tail-close/5min-hard-cap window: an answer is done once 15s pass with
+# no new utterances following speech after alarm_at; if NO speech at all
+# arrives within 2 min, the dispatch is deferred (not graded) rather than
+# forced to no_answer -- Phase 5D measured real answers sometimes taking
+# several minutes to become transcribable, so an immediate no_answer here
+# would risk discarding a genuine answer, not just a real miss.
+ANSWER_QUIET_S = 15.0
+NO_SPEECH_DEFER_S = 120.0
+PENDING_GRADE_FALLBACK_WINDOW_S = 600.0  # used only when no later dispatch exists yet to bound the window
+
+# Phase 5E Step 4 (AGENT.md, 2026-10-05): hint-prefix wording, effect still
+# unproven (tracked via Answer.hint_in_notification) -- kept as a prefix
+# rather than a suffix so a todo truncated by Bee's own display still shows
+# the instruction before the question. TODO_TEXT_MAX_CHARS is Bee's own
+# todo-text cap (a platform constraint, distinct from the ~100-char
+# question-generation length cap in recall/questions.py).
+QUESTION_PREFIX = "Recall quiz question, do not include the answer or any hints: "
+QUESTION_PREFIX_SHORT = "Recall quiz, no hints: "
+TODO_TEXT_MAX_CHARS = 120
+
+
+def question_todo_text(question_text: str) -> str:
+    full = f"{QUESTION_PREFIX}{question_text}"
+    if len(full) <= TODO_TEXT_MAX_CHARS:
+        return full
+    return f"{QUESTION_PREFIX_SHORT}{question_text}"
 
 
 def _is_approved(db, question: Question) -> bool:
@@ -130,7 +157,7 @@ def _post_todo_tracked(client: BeeClient, text: str) -> int:
 
 
 def _dispatch_question(db, client: BeeClient, session_run: SessionRun, question: Question, now: datetime) -> Dispatch:
-    text = f"Recall: {question.text}"
+    text = question_todo_text(question.text)
     resp = client.create_todo(text, alarm_at=now.isoformat(timespec="seconds"))
     dispatch = Dispatch(
         question_id=question.id,
@@ -154,8 +181,16 @@ def _end_session(db, client: BeeClient, session_run: SessionRun, status: str, no
     db.add(session_run)
     db.commit()
 
+    processing_count = len(
+        db.exec(
+            select(Dispatch).where(Dispatch.session_run_id == session_run.id).where(Dispatch.status == "processing")
+        ).all()
+    )
+
     streak = current_streak_days(now)
     report_text = f"Recall: {session_run.questions_answered} out of {session_run.questions_asked} correct today"
+    if processing_count:
+        report_text += f", {processing_count} still processing"
     if streak > 0:
         report_text += f", {streak} day streak"
     todo_id = _post_todo_tracked(client, report_text)
@@ -163,33 +198,17 @@ def _end_session(db, client: BeeClient, session_run: SessionRun, status: str, no
     db.commit()
 
 
-def _grade_dispatch(db, client: BeeClient, dispatch: Dispatch, question: Question, now: datetime, force_no_answer: bool = False) -> Answer:
+def _grade_dispatch(db, client: BeeClient, dispatch: Dispatch, question: Question, now: datetime, match: MatchResult | None = None) -> Answer:
     """Grades one in-session dispatch, deletes its question todo, posts
-    feedback. `force_no_answer` short-circuits matching/grading entirely
-    (used by recover() on wake -- too much time has passed to trust any
-    late-arriving utterances as a real answer to this specific question)."""
-    if force_no_answer:
-        from recall.grading import NO_ANSWER_FEEDBACK
-        from recall.llm.base import GradeResult
-
-        result = GradeResult(verdict="no_answer", rubric_points_hit=[], quality=0, feedback=NO_ANSWER_FEEDBACK)
-        answer = Answer(
-            dispatch_id=dispatch.id,
-            utterance_ids=[],
-            raw_text="",
-            verdict=result.verdict,
-            rubric_points_hit=result.rubric_points_hit,
-            quality=result.quality,
-            feedback=result.feedback,
-        )
-        db.add(answer)
-        db.commit()
-        db.refresh(answer)
-    else:
+    feedback. `match` lets the caller reuse a window already classified as
+    'ready' (advance()) rather than recomputing it; defaults to a fresh
+    match using the v4 pacing constants (ANSWER_QUIET_S/NO_SPEECH_DEFER_S)
+    for any other caller."""
+    if match is None:
         rows = db.exec(select(Utterance).where(Utterance.spoken_at >= dispatch.alarm_at).order_by(Utterance.spoken_at)).all()
         utterances = [MatcherUtterance(id=r.id, text=r.text, spoken_at=r.spoken_at) for r in rows]
-        match = match_answer_window(utterances, alarm_at=dispatch.alarm_at)
-        answer = grade_and_persist(dispatch, question, match)
+        match = match_answer_window(utterances, alarm_at=dispatch.alarm_at, tail_close_s=ANSWER_QUIET_S, hard_cap_s=NO_SPEECH_DEFER_S)
+    answer = grade_and_persist(dispatch, question, match)
 
     dispatch.status = "answered"
     db.add(dispatch)
@@ -239,10 +258,48 @@ def start_session(trigger: str, now: datetime | None = None) -> SessionRun | Non
         db.close()
 
 
+def _classify_window(db, dispatch: Dispatch, now: datetime) -> tuple[str, MatchResult]:
+    """Classifies an open dispatch's answer window as 'wait' | 'ready' |
+    'defer' (AGENT.md v4 session pacing, Phase 5E Step 3): ready once 15s
+    pass with no new utterances following speech (or the 2-min hard cap
+    cuts off a still-ongoing answer); defer (no grading yet) if no speech
+    at all arrives by alarm_at + 2 min."""
+    rows = db.exec(select(Utterance).where(Utterance.spoken_at >= dispatch.alarm_at).order_by(Utterance.spoken_at)).all()
+    utterances = [MatcherUtterance(id=r.id, text=r.text, spoken_at=r.spoken_at) for r in rows]
+    match = match_answer_window(utterances, alarm_at=dispatch.alarm_at, tail_close_s=ANSWER_QUIET_S, hard_cap_s=NO_SPEECH_DEFER_S)
+    hard_cap_at = dispatch.alarm_at + timedelta(seconds=NO_SPEECH_DEFER_S)
+
+    if match.utterances:
+        quiet_for = (now - match.utterances[-1].spoken_at).total_seconds()
+        if quiet_for >= ANSWER_QUIET_S or now >= hard_cap_at:
+            return "ready", match
+        return "wait", match
+    if now >= hard_cap_at:
+        return "defer", match
+    return "wait", match
+
+
+def _defer_dispatch(db, client: BeeClient, dispatch: Dispatch) -> None:
+    """No speech by alarm_at + 2 min: move on without grading. Graded
+    later in the background once the final transcript becomes available
+    (grade_pending_dispatches) -- never blocks the session."""
+    dispatch.status = "processing"
+    db.add(dispatch)
+    db.commit()
+    client.delete_todo(dispatch.bee_todo_id)
+
+
+def _last_two_dispatches_both_deferred(db, session_run: SessionRun) -> bool:
+    dispatches = db.exec(select(Dispatch).where(Dispatch.session_run_id == session_run.id).order_by(Dispatch.id)).all()
+    if len(dispatches) < 2:
+        return False
+    return dispatches[-1].status == "processing" and dispatches[-2].status == "processing"
+
+
 def advance(now: datetime | None = None) -> dict | None:
-    """Called on every daemon poll tick. If the active session's open
-    dispatch's answer window has closed, grades it and either ends the
-    session or dispatches the next due question. Returns a dict
+    """Called on every daemon poll tick. Classifies the active session's
+    open dispatch as wait/ready/defer and acts accordingly, then either
+    ends the session or dispatches the next due question. Returns a dict
     describing what happened, or None if there's nothing to do."""
     now = now or datetime.now(UTC)
     db = get_session()
@@ -255,21 +312,23 @@ def advance(now: datetime | None = None) -> dict | None:
         if dispatch is None:
             return None  # shouldn't happen -- an active session always has one open dispatch
 
-        window_closed_at = dispatch.alarm_at + timedelta(seconds=DEFAULT_HARD_CAP_S + ANSWER_WINDOW_SAFETY_BUFFER_S)
-        if now < window_closed_at:
+        status, match = _classify_window(db, dispatch, now)
+        if status == "wait":
             return None
 
         question = db.get(Question, dispatch.question_id)
         with BeeProxy(port=settings.bee_proxy_port) as proxy, BeeClient(proxy.base_url) as client:
-            answer = _grade_dispatch(db, client, dispatch, question, now)
+            if status == "defer":
+                _defer_dispatch(db, client, dispatch)
+                db.refresh(session_run)
+                if _last_two_dispatches_both_deferred(db, session_run):
+                    _end_session(db, client, session_run, "paused", now)
+                    return {"event": "session_paused_two_deferred", "question_id": question.id}
+            else:
+                _grade_dispatch(db, client, dispatch, question, now, match=match)
+                time.sleep(POST_FEEDBACK_PAUSE_S)
+                db.refresh(session_run)
 
-            if answer.verdict == "no_answer":
-                _end_session(db, client, session_run, "ended_no_answer", now)
-                return {"event": "session_ended_no_answer", "question_id": question.id}
-
-            time.sleep(POST_FEEDBACK_PAUSE_S)
-
-            db.refresh(session_run)
             if session_run.questions_asked >= settings.daily_quota:
                 _end_session(db, client, session_run, "completed", now)
                 return {"event": "session_completed_quota", "question_id": question.id}
@@ -284,17 +343,22 @@ def advance(now: datetime | None = None) -> dict | None:
 
             next_question = remaining[0]
             _dispatch_question(db, client, session_run, next_question, now)
-            return {"event": "next_question_dispatched", "question_id": next_question.id}
+            event = "next_question_dispatched" if status != "defer" else "deferred_next_question_dispatched"
+            return {"event": event, "question_id": next_question.id}
     finally:
         db.close()
 
 
 def recover(now: datetime | None = None) -> dict | None:
-    """Phase 5C Step 0.3: wake/reconnect recovery. If there's an active
-    session with an open dispatch whose answer window has already passed,
-    force it directly to no_answer (no penalty) and end the session
-    cleanly -- too much time has elapsed (sleep/disconnect) to trust any
-    late-arriving utterance as a real answer to that specific question."""
+    """Phase 5C Step 0.3, updated Phase 5E: wake/reconnect recovery. If
+    there's an active session with an open dispatch whose answer window
+    has already passed, defer it (not force no_answer) and end the
+    session (status 'paused', no penalty) -- a sleep/wake gap can be
+    minutes long, and Phase 5D measured real answers sometimes taking
+    several minutes to become transcribable, so forcing no_answer here
+    would risk discarding a genuine answer the final transcript just
+    hasn't caught up with yet. Deferred means grade_pending_dispatches
+    picks it up later, same as any other deferred dispatch."""
     now = now or datetime.now(UTC)
     db = get_session()
     try:
@@ -306,14 +370,69 @@ def recover(now: datetime | None = None) -> dict | None:
         if dispatch is None:
             return None
 
-        window_closed_at = dispatch.alarm_at + timedelta(seconds=DEFAULT_HARD_CAP_S + ANSWER_WINDOW_SAFETY_BUFFER_S)
-        if now < window_closed_at:
+        hard_cap_at = dispatch.alarm_at + timedelta(seconds=NO_SPEECH_DEFER_S)
+        if now < hard_cap_at:
             return None  # window hasn't even passed yet -- let advance() handle it normally
 
         question = db.get(Question, dispatch.question_id)
         with BeeProxy(port=settings.bee_proxy_port) as proxy, BeeClient(proxy.base_url) as client:
-            _grade_dispatch(db, client, dispatch, question, now, force_no_answer=True)
-            _end_session(db, client, session_run, "ended_no_answer", now)
+            _defer_dispatch(db, client, dispatch)
+            _end_session(db, client, session_run, "paused", now)
         return {"event": "recovered_stale_session", "question_id": question.id}
     finally:
         db.close()
+
+
+def _next_alarm_after(db, alarm_at: datetime) -> datetime | None:
+    rows = db.exec(select(Dispatch.alarm_at).where(Dispatch.alarm_at > alarm_at).order_by(Dispatch.alarm_at)).all()
+    return rows[0] if rows else None
+
+
+def grade_pending_dispatches(now: datetime | None = None) -> list[dict]:
+    """Phase 5E Step 3: grades dispatches deferred by _defer_dispatch once
+    the final (non-realtime) transcript for their conversation window
+    becomes available. Matched by spoken_at in [this alarm_at, next
+    alarm_at) -- the next dispatch anywhere marks the boundary past which
+    speech belongs to a different question, not this one; if none exists
+    yet, falls back to a generous fixed window. Never blocks session
+    advancement -- called periodically from the slow loop. Posts no
+    feedback todo: by the time this runs the session has already moved on
+    or ended, so the grade shows up on the dashboard only."""
+    now = now or datetime.now(UTC)
+    db = get_session()
+    results: list[dict] = []
+    try:
+        pending = db.exec(select(Dispatch).where(Dispatch.status == "processing")).all()
+        for dispatch in pending:
+            next_alarm = _next_alarm_after(db, dispatch.alarm_at)
+            window_end = next_alarm or (dispatch.alarm_at + timedelta(seconds=PENDING_GRADE_FALLBACK_WINDOW_S))
+            rows = db.exec(
+                select(Utterance)
+                .where(Utterance.spoken_at >= dispatch.alarm_at)
+                .where(Utterance.spoken_at < window_end)
+                .order_by(Utterance.spoken_at)
+            ).all()
+            if not rows:
+                continue  # still nothing yet -- try again on the next pass
+
+            question = db.get(Question, dispatch.question_id)
+            utterances = [MatcherUtterance(id=r.id, text=r.text, spoken_at=r.spoken_at) for r in rows]
+            span_s = max((window_end - dispatch.alarm_at).total_seconds(), 1.0)
+            match = match_answer_window(utterances, alarm_at=dispatch.alarm_at, tail_close_s=span_s, hard_cap_s=span_s)
+            if not match.utterances:
+                continue
+
+            answer = grade_and_persist(dispatch, question, match)
+            dispatch.status = "answered"
+            db.add(dispatch)
+            _apply_scheduling(db, question, answer, now)
+
+            session_run = db.get(SessionRun, dispatch.session_run_id)
+            if session_run is not None and answer.verdict != "no_answer":
+                session_run.questions_answered += 1
+                db.add(session_run)
+            db.commit()
+            results.append({"dispatch_id": dispatch.id, "question_id": question.id, "verdict": answer.verdict})
+    finally:
+        db.close()
+    return results

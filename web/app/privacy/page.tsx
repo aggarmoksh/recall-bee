@@ -1,9 +1,21 @@
-import { api } from "@/lib/api";
+import { api, ExternalAccessEntry } from "@/lib/api";
 import Reveal from "@/components/Reveal";
+
+function _entryLabel(entry: ExternalAccessEntry): string {
+  const name = entry.name ?? entry.service ?? entry.service_name ?? entry.id;
+  return typeof name === "string" || typeof name === "number" ? String(name) : "Unknown entry";
+}
 
 export default async function PrivacyPage() {
   const data = await api.privacy();
   const skippedTotal = Object.values(data.sessions_skipped_by_type).reduce((a, b) => a + b, 0);
+
+  let externalAccess: ExternalAccessEntry[] | null = null;
+  try {
+    externalAccess = (await api.externalAccess()).external_access;
+  } catch {
+    externalAccess = null; // Bee unreachable -- section renders a fallback message instead of failing the page
+  }
 
   return (
     <div className="flex flex-col gap-10">
@@ -41,6 +53,30 @@ export default async function PrivacyPage() {
               </li>
             ))}
           </ul>
+        </section>
+      </Reveal>
+
+      <Reveal delay={220}>
+        <section>
+          <h2 className="mb-4 text-xl font-semibold">What Recall read from your Bee</h2>
+          {externalAccess === null ? (
+            <div className="rounded-3xl border border-border bg-surface py-10 text-center shadow-sm">
+              <p className="text-muted text-lg">Could not reach Bee to check this right now.</p>
+            </div>
+          ) : externalAccess.length === 0 ? (
+            <div className="rounded-3xl border border-border bg-surface py-10 text-center shadow-sm">
+              <p className="text-muted text-lg">No external services or apps have accessed your Bee data.</p>
+            </div>
+          ) : (
+            <ul className="flex flex-col gap-3">
+              {externalAccess.map((entry, i) => (
+                <li key={i} className="bounce rounded-2xl bg-surface p-5 shadow-sm hover:shadow-lg">
+                  <p className="text-lg font-medium">{_entryLabel(entry)}</p>
+                  <pre className="text-muted mt-2 overflow-x-auto text-sm">{JSON.stringify(entry, null, 2)}</pre>
+                </li>
+              ))}
+            </ul>
+          )}
         </section>
       </Reveal>
     </div>

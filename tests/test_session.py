@@ -108,6 +108,29 @@ def _seed_questions(engine, n: int, session_id=1):
         db.commit()
 
 
+def test_question_todo_text_uses_full_prefix_when_it_fits():
+    from recall.session import QUESTION_PREFIX, TODO_TEXT_MAX_CHARS, question_todo_text
+
+    text = question_todo_text("Short question?")
+    assert text == f"{QUESTION_PREFIX}Short question?"
+    assert len(text) <= TODO_TEXT_MAX_CHARS
+
+
+def test_question_todo_text_falls_back_to_short_prefix_when_too_long():
+    from recall.session import QUESTION_PREFIX_SHORT, TODO_TEXT_MAX_CHARS, question_todo_text
+
+    long_question = "A" * 90  # full prefix (62 chars) + this would exceed 120
+    text = question_todo_text(long_question)
+    assert text == f"{QUESTION_PREFIX_SHORT}{long_question}"
+    assert len(text) <= TODO_TEXT_MAX_CHARS
+
+    # At the ~100-char ceiling recall.questions already allows, even the
+    # short prefix (23 chars) can still push past 120 -- known limitation,
+    # reported separately rather than silently truncating the question.
+    near_max_question = "A" * 100
+    assert len(f"{QUESTION_PREFIX_SHORT}{near_max_question}") > TODO_TEXT_MAX_CHARS
+
+
 def test_start_session_returns_none_when_nothing_due(db_engine):
     from recall.session import start_session
 
@@ -160,6 +183,10 @@ def _answer_open_dispatch(db_engine, bee_store, verdict, quality, rubric_hit=Non
         db.commit()
 
 
+READY_AFTER_ANSWER_S = 25  # utterance seeded at alarm+5s; 15s quiet => ready at alarm+20s
+DEFER_AFTER_S = 125  # just past the 2-min no-speech hard cap
+
+
 def test_quota_hit_ends_session_completed_and_posts_report(db_engine, bee_store, patch_provider, monkeypatch):
     from dataclasses import replace
 
@@ -174,15 +201,16 @@ def test_quota_hit_ends_session_completed_and_posts_report(db_engine, bee_store,
     patch_provider(GradeResult(verdict="correct", rubric_points_hit=["a", "b"], quality=5, feedback="Nice."))
 
     now = BASE
+
     run = start_session("tick", now=now)
-    window_closed = now + timedelta(seconds=331)
+    ready_at = now + timedelta(seconds=READY_AFTER_ANSWER_S)
 
     _answer_open_dispatch(db_engine, bee_store, "correct", 5)
-    result = advance(now=window_closed)
+    result = advance(now=ready_at)
     assert result["event"] == "next_question_dispatched"
 
     _answer_open_dispatch(db_engine, bee_store, "correct", 5)
-    result = advance(now=window_closed + timedelta(seconds=400))
+    result = advance(now=ready_at + timedelta(seconds=READY_AFTER_ANSWER_S))
     assert result["event"] == "session_completed_quota"
 
     with DBSession(db_engine) as db:
@@ -195,34 +223,126 @@ def test_quota_hit_ends_session_completed_and_posts_report(db_engine, bee_store,
     report_texts = [v["text"] for v in store.values() if "correct today" in v["text"]]
     assert len(report_texts) == 1
     assert "2 out of 2 correct today" in report_texts[0]
+    assert "still processing" not in report_texts[0]
 
 
-def test_no_answer_ends_session_with_no_penalty(db_engine, bee_store, patch_provider):
+def test_single_deferred_question_does_not_end_session(db_engine, bee_store, patch_provider):
+    """Phase 5E Step 3: one deferred (no-speech-by-2min) dispatch just
+    moves on to the next question -- it takes TWO consecutive deferred
+    dispatches to pause the session, not one."""
     from recall.session import advance, start_session
 
     _seed_questions(db_engine, 3)
 
     now = BASE
     run = start_session("tick", now=now)
-    window_closed = now + timedelta(seconds=331)
+    defer_at = now + timedelta(seconds=DEFER_AFTER_S)
 
-    # No utterance seeded -- the window closes with nothing captured.
-    result = advance(now=window_closed)
+    # No utterance seeded -- nothing arrives within the 2-min hard cap.
+    result = advance(now=defer_at)
 
-    assert result["event"] == "session_ended_no_answer"
+    assert result["event"] == "deferred_next_question_dispatched"
     with DBSession(db_engine) as db:
         run_row = db.get(SessionRun, run.id)
-        assert run_row.status == "ended_no_answer"
-        assert run_row.questions_answered == 0
-        answer = db.exec(select(Answer)).first()
-        assert answer.verdict == "no_answer"
-        # Question 1 stays due (not retired, no SM-2 penalty) -- it has no
-        # ReviewState row at all since no_answer never creates/updates one.
-        from recall.db import ReviewState
-
-        assert db.exec(select(ReviewState).where(ReviewState.question_id == 1)).first() is None
+        assert run_row.status == "active"
+        assert run_row.questions_asked == 2
+        d1 = db.exec(select(Dispatch).where(Dispatch.question_id == 1)).first()
+        assert d1.status == "processing"
+        # Not graded yet -- no Answer row at all, no SM-2 touched.
+        assert db.exec(select(Answer).where(Answer.dispatch_id == d1.id)).first() is None
         q1 = db.get(Question, 1)
         assert q1.active is True
+
+
+def test_two_consecutive_deferred_pauses_session_no_penalty(db_engine, bee_store, patch_provider):
+    from recall.session import advance, start_session
+
+    _seed_questions(db_engine, 3)
+
+    now = BASE
+    run = start_session("tick", now=now)
+    defer_at = now + timedelta(seconds=DEFER_AFTER_S)
+
+    result = advance(now=defer_at)
+    assert result["event"] == "deferred_next_question_dispatched"
+
+    result = advance(now=defer_at + timedelta(seconds=DEFER_AFTER_S))
+    assert result["event"] == "session_paused_two_deferred"
+
+    with DBSession(db_engine) as db:
+        run_row = db.get(SessionRun, run.id)
+        assert run_row.status == "paused"
+        assert run_row.questions_asked == 2
+        assert run_row.questions_answered == 0
+        for qid in (1, 2):
+            d = db.exec(select(Dispatch).where(Dispatch.question_id == qid)).first()
+            assert d.status == "processing"
+
+    store, _ = bee_store
+    report_texts = [v["text"] for v in store.values() if "correct today" in v["text"]]
+    assert len(report_texts) == 1
+    assert "0 out of 2 correct today" in report_texts[0]
+    assert "2 still processing" in report_texts[0]
+
+
+def test_deferred_dispatch_graded_later_from_final_transcript(db_engine, bee_store, patch_provider):
+    """Phase 5E Step 3: a deferred dispatch is graded in the background
+    once the final transcript shows an utterance landing inside
+    [this alarm_at, next alarm_at) -- matched by spoken_at, no feedback
+    todo posted (dashboard-only)."""
+    from recall.db import Utterance
+    from recall.session import advance, grade_pending_dispatches, start_session
+
+    _seed_questions(db_engine, 3)
+    patch_provider(GradeResult(verdict="partial", rubric_points_hit=["a"], quality=3, feedback="Missed b."))
+
+    now = BASE
+    start_session("tick", now=now)
+    defer_at = now + timedelta(seconds=DEFER_AFTER_S)
+    result = advance(now=defer_at)  # question 1 deferred, question 2 dispatched
+    assert result["event"] == "deferred_next_question_dispatched"
+
+    store_before, _ = bee_store
+    todos_before = len(store_before)
+
+    with DBSession(db_engine) as db:
+        d1 = db.exec(select(Dispatch).where(Dispatch.question_id == 1)).first()
+        # A late-arriving final-transcript utterance, inside [d1.alarm_at, d2.alarm_at).
+        db.add(Utterance(id=99001, conversation_id=1, conversation_uuid="x", text="a late answer that finally came through with plenty of extra words to be safe", spoken_at=d1.alarm_at + timedelta(seconds=30)))
+        db.commit()
+
+    results = grade_pending_dispatches(now=defer_at + timedelta(seconds=60))
+    assert len(results) == 1
+    assert results[0]["question_id"] == 1
+    assert results[0]["verdict"] == "partial"
+
+    with DBSession(db_engine) as db:
+        d1 = db.exec(select(Dispatch).where(Dispatch.question_id == 1)).first()
+        assert d1.status == "answered"
+        answer = db.exec(select(Answer).where(Answer.dispatch_id == d1.id)).first()
+        assert answer.verdict == "partial"
+        run_row = db.exec(select(SessionRun)).first()
+        assert run_row.questions_answered == 1  # updated even though the session already moved on
+
+    # No new feedback todo posted for the deferred grade -- dashboard-only.
+    store_after, _ = bee_store
+    assert len(store_after) == todos_before
+
+
+def test_grade_pending_dispatches_is_a_noop_when_nothing_new_arrived(db_engine, bee_store, patch_provider):
+    from recall.session import advance, grade_pending_dispatches, start_session
+
+    _seed_questions(db_engine, 3)
+    now = BASE
+    start_session("tick", now=now)
+    defer_at = now + timedelta(seconds=DEFER_AFTER_S)
+    advance(now=defer_at)
+
+    results = grade_pending_dispatches(now=defer_at + timedelta(seconds=30))
+    assert results == []
+    with DBSession(db_engine) as db:
+        d1 = db.exec(select(Dispatch).where(Dispatch.question_id == 1)).first()
+        assert d1.status == "processing"  # still pending resolution
 
 
 def test_restart_mid_session_resumes_same_open_dispatch(db_engine, bee_store, patch_provider):
@@ -247,7 +367,12 @@ def test_restart_mid_session_resumes_same_open_dispatch(db_engine, bee_store, pa
         assert resumed_dispatch.id == original_dispatch_id
 
 
-def test_recover_forces_stale_dispatch_to_no_answer_and_ends_session(db_engine, bee_store, patch_provider):
+def test_recover_defers_stale_dispatch_and_pauses_session(db_engine, bee_store, patch_provider):
+    """Phase 5E: recover() no longer forces an immediate no_answer -- a
+    sleep/wake gap can be long, and a real answer might just be slow to
+    transcribe (Phase 5D). It defers instead (graded later from the final
+    transcript, same as any other deferred dispatch) and pauses the
+    session, no penalty."""
     from recall.session import recover, start_session
 
     _seed_questions(db_engine, 3)
@@ -262,10 +387,10 @@ def test_recover_forces_stale_dispatch_to_no_answer_and_ends_session(db_engine, 
     assert result["event"] == "recovered_stale_session"
     with DBSession(db_engine) as db:
         run_row = db.get(SessionRun, run.id)
-        assert run_row.status == "ended_no_answer"
-        answer = db.exec(select(Answer)).first()
-        assert answer.verdict == "no_answer"
-        assert answer.raw_text == ""
+        assert run_row.status == "paused"
+        d1 = db.exec(select(Dispatch).where(Dispatch.question_id == 1)).first()
+        assert d1.status == "processing"
+        assert db.exec(select(Answer)).first() is None  # not graded yet -- deferred
 
 
 def test_recover_is_a_noop_when_window_has_not_passed_yet(db_engine, bee_store, patch_provider):
