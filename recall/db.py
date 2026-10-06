@@ -83,11 +83,18 @@ class Dispatch(SQLModel, table=True):
     question_id: int = Field(foreign_key="question.id", index=True)
     bee_todo_id: int = Field(index=True, unique=True)
     alarm_at: datetime
-    status: str = "pending"  # pending / delivered / answered / missed
+    status: str = "pending"  # pending / processing (deferred) / answered
     dispatched_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     # v4 (Phase 5C): which mini-session this question belongs to. NULL for
     # pre-v4 historical rows (the old timed-dispatch model had no sessions).
     session_run_id: int | None = Field(default=None, foreign_key="sessionrun.id", index=True)
+    # Phase 5F answer-done rule: tracks when the current last-seen utterance
+    # for this dispatch's window first ARRIVED (was first observed by our
+    # own polling), distinct from when it was actually spoken -- "done"
+    # requires both no new arrival for 15s AND the spoken_at itself being
+    # >=40s old, to tolerate realtime-transcript lag (Phase 5D: 25-39s+).
+    last_seen_utterance_id: int | None = None
+    last_seen_utterance_at: datetime | None = None
 
 
 class Answer(SQLModel, table=True):

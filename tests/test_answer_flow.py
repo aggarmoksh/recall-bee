@@ -18,7 +18,7 @@ class _FakeProvider(LLMProvider):
     def generate_questions(self, transcript, n, target_language=None):
         raise NotImplementedError
 
-    def grade_answer(self, question, spoken_answer):
+    def grade_answer(self, question, spoken_answer, previous_question=None):
         return self.result
 
     def shorten_question(self, text, max_chars):

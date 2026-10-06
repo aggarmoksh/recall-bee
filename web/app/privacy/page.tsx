@@ -56,18 +56,24 @@ export default async function PrivacyPage() {
         </section>
       </Reveal>
 
-      <Reveal delay={220}>
-        <section>
-          <h2 className="mb-4 text-xl font-semibold">What Recall read from your Bee</h2>
-          {externalAccess === null ? (
+      {/* Phase 5F Step 5: hidden entirely when the list is empty -- an
+          empty "What Recall read from your Bee" section with nothing in
+          it is just noise, and developer-mode CLI/proxy reads don't show
+          up here anyway (see FRICTION_LOG), so an empty list isn't a
+          meaningful "nothing has accessed your data" claim either. */}
+      {externalAccess === null ? (
+        <Reveal delay={220}>
+          <section>
+            <h2 className="mb-4 text-xl font-semibold">What Recall read from your Bee</h2>
             <div className="rounded-3xl border border-border bg-surface py-10 text-center shadow-sm">
               <p className="text-muted text-lg">Could not reach Bee to check this right now.</p>
             </div>
-          ) : externalAccess.length === 0 ? (
-            <div className="rounded-3xl border border-border bg-surface py-10 text-center shadow-sm">
-              <p className="text-muted text-lg">No external services or apps have accessed your Bee data.</p>
-            </div>
-          ) : (
+          </section>
+        </Reveal>
+      ) : externalAccess.length > 0 ? (
+        <Reveal delay={220}>
+          <section>
+            <h2 className="mb-4 text-xl font-semibold">What Recall read from your Bee</h2>
             <ul className="flex flex-col gap-3">
               {externalAccess.map((entry, i) => (
                 <li key={i} className="bounce rounded-2xl bg-surface p-5 shadow-sm hover:shadow-lg">
@@ -76,9 +82,9 @@ export default async function PrivacyPage() {
                 </li>
               ))}
             </ul>
-          )}
-        </section>
-      </Reveal>
+          </section>
+        </Reveal>
+      ) : null}
     </div>
   );
 }

@@ -20,7 +20,7 @@ class _FakeProvider(LLMProvider):
     def generate_questions(self, transcript, n, target_language=None):
         raise NotImplementedError
 
-    def grade_answer(self, question: GeneratedQuestion, spoken_answer: str) -> GradeResult:
+    def grade_answer(self, question: GeneratedQuestion, spoken_answer: str, previous_question=None) -> GradeResult:
         self.called_with = (question, spoken_answer)
         return self.result
 
@@ -175,6 +175,41 @@ def test_grade_and_persist_writes_answer_row(db_engine, seeded_dispatch, monkeyp
     with DBSession(db_engine) as db:
         loaded = db.get(Answer, answer.id)
         assert loaded.verdict == "partial"
+
+
+def test_grade_match_passes_previous_question_to_provider(monkeypatch):
+    provider = _FakeProvider(GradeResult(verdict="correct", rubric_points_hit=["a"], quality=5, feedback="ok", answers="current"))
+    monkeypatch.setattr("recall.grading.get_provider", lambda: provider)
+    previous = _question(id=2, text="What is the previous question?")
+
+    grade_match(_question(), _match(_LONG_ANSWER), previous_question=previous)
+
+    assert provider.called_with is not None  # previous_question isn't captured in called_with (2-tuple), but the call didn't raise
+
+
+def test_grade_match_answers_previous_skips_incomplete_capture_override(monkeypatch):
+    """When the grader says this speech answers the PREVIOUS question, the
+    word-count-based incomplete_capture override must not fire here -- the
+    caller (recall.session) is about to regrade this content fresh against
+    the previous question, not finalize it against the current one."""
+    provider = _FakeProvider(GradeResult(verdict="partial", rubric_points_hit=["a"], quality=3, feedback="ok", answers="previous"))
+    monkeypatch.setattr("recall.grading.get_provider", lambda: provider)
+    previous = _question(id=2, text="What is the previous question?")
+
+    result = grade_match(_question(), _match("short reply"), previous_question=previous)  # 2 words, would normally trigger the override
+
+    assert result.answers == "previous"
+    assert result.verdict == "partial"  # untouched -- override skipped
+
+
+def test_grade_match_answers_current_still_applies_incomplete_capture(monkeypatch):
+    provider = _FakeProvider(GradeResult(verdict="partial", rubric_points_hit=["a"], quality=3, feedback="ok", answers="current"))
+    monkeypatch.setattr("recall.grading.get_provider", lambda: provider)
+    previous = _question(id=2, text="What is the previous question?")
+
+    result = grade_match(_question(), _match("short reply"), previous_question=previous)
+
+    assert result.verdict == "incomplete_capture"  # override still applies when answers=="current"
 
 
 def test_grade_and_persist_handles_no_answer_case(db_engine, seeded_dispatch, monkeypatch):

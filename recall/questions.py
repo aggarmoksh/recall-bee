@@ -37,7 +37,7 @@ from recall.overrides import load_excluded_sessions
 
 DEFAULT_N = 8
 FUZZY_MATCH_THRESHOLD = 0.5
-MAX_QUESTION_CHARS = 100  # a question is delivered as a Bee todo notification
+MAX_QUESTION_CHARS = 95  # AGENT.md Phase 5F: tightened from 100 so the short hint-prefix (23 chars) usually still fits under the 120-char todo cap
 
 # session_type -> approval_status for the questions generated from it
 APPROVAL_BY_SESSION_TYPE = {

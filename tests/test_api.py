@@ -142,17 +142,32 @@ def test_today_current_question_skips_a_deferred_dispatch(client, db_engine):
 
 
 def test_today_includes_report_card_for_a_session_ended_today(client, db_engine):
+    """Phase 5F: report_card numbers come from recall.scoring.
+    session_run_breakdown (actual Dispatch/Answer rows), not the
+    SessionRun.questions_answered counter -- so the dashboard and the
+    session-end report todo can never disagree."""
     session_id, question_id = _seed_basic(db_engine)
     now = datetime.now(UTC)
     with DBSession(db_engine) as db:
-        db.add(SessionRun(trigger="tick", status="completed", started_at=now - timedelta(minutes=5), ended_at=now, questions_asked=3, questions_answered=3))
+        run = SessionRun(trigger="tick", status="completed", started_at=now - timedelta(minutes=5), ended_at=now, questions_asked=3, questions_answered=3)
+        db.add(run)
         db.commit()
+        db.refresh(run)
+        for i, (verdict, quality) in enumerate([("correct", 5), ("partial", 3), ("correct", 4)]):
+            d = Dispatch(question_id=question_id, bee_todo_id=200 + i, alarm_at=now, status="answered", dispatched_at=now, session_run_id=run.id)
+            db.add(d)
+            db.commit()
+            db.refresh(d)
+            db.add(Answer(dispatch_id=d.id, raw_text="x", verdict=verdict, quality=quality, matched_at=now))
+            db.commit()
 
     resp = client.get("/api/today")
     body = resp.json()
     assert body["report_card"] is not None
     assert body["report_card"]["questions_asked"] == 3
     assert body["report_card"]["questions_answered"] == 3
+    assert body["report_card"]["solid"] == 2  # quality 5 and 4 are solid (>=4); quality 3 is not
+    assert body["report_card"]["needs_another_look"] == 1
 
 
 def test_today_report_card_counts_still_processing_dispatches(client, db_engine):

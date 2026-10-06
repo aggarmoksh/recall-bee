@@ -78,9 +78,11 @@ class _QuotaEnforcedProvider(LLMProvider):
         _check_and_increment_daily_calls()
         return self._inner.generate_questions(transcript, n, target_language)
 
-    def grade_answer(self, question: GeneratedQuestion, spoken_answer: str) -> GradeResult:
+    def grade_answer(
+        self, question: GeneratedQuestion, spoken_answer: str, previous_question: GeneratedQuestion | None = None
+    ) -> GradeResult:
         _check_and_increment_daily_calls()
-        return self._inner.grade_answer(question, spoken_answer)
+        return self._inner.grade_answer(question, spoken_answer, previous_question=previous_question)
 
     def shorten_question(self, text: str, max_chars: int) -> str:
         _check_and_increment_daily_calls()

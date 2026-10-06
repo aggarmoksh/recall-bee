@@ -13,7 +13,7 @@ Rubric (key points a good explanation should contain):
 
 Source excerpt (the ground truth this question is grounded in):
 {{SOURCE_EXCERPT}}
-
+{{PREVIOUS_QUESTION_BLOCK}}
 Spoken answer (STT transcription, may be noisy or code-switched):
 {{ANSWER_TEXT}}
 
@@ -30,3 +30,4 @@ Spoken answer (STT transcription, may be noisy or code-switched):
 5. Do NOT penalize correct outside knowledge. If the speaker adds accurate information beyond the source excerpt, that is not an error -- grade based on whether the rubric points are covered and nothing said is wrong, not on whether the answer is confined to the transcript.
 6. `quality`: SM-2 scale 0-5, per this mapping -- `correct` -> 5 (all rubric points) or 4 (correct but a minor gap), `partial` -> 3, `incorrect` -> 1, `not_an_answer` -> 0.
 7. `feedback`: at most 12 words. This is shown on a wrist notification, so it must be short. If any rubric point was missed, name it briefly (e.g. "Missed: the sewer system detail"). If fully correct, a short affirmation is fine.
+{{ANSWERS_WHICH_RULE}}

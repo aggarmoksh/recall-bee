@@ -14,7 +14,7 @@ class _FakeProvider(LLMProvider):
         self.calls += 1
         return QuestionGenerationResult(session_type="casual", session_type_reason="r", questions=[])
 
-    def grade_answer(self, question, spoken_answer):
+    def grade_answer(self, question, spoken_answer, previous_question=None):
         self.calls += 1
         return GradeResult(verdict="correct", rubric_points_hit=[], quality=5, feedback="ok")
 

@@ -49,7 +49,7 @@ class _FakeProvider(LLMProvider):
             questions=questions,
         )
 
-    def grade_answer(self, question, spoken_answer):
+    def grade_answer(self, question, spoken_answer, previous_question=None):
         raise NotImplementedError
 
     def shorten_question(self, text, max_chars):

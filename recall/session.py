@@ -31,42 +31,52 @@ from recall.config import settings
 from recall.db import Answer, Dispatch, FeedbackTodo, Question, ReviewState
 from recall.db import Session as SessionModel
 from recall.db import SessionRun, Utterance, get_session
-from recall.grading import grade_and_persist
+from recall.grading import grade_and_persist, grade_match
+from recall.llm.base import GradeResult
 from recall.matcher import MatchResult
 from recall.matcher import Utterance as MatcherUtterance
-from recall.matcher import match_answer_window
-from recall.scoring import current_streak_days
+from recall.matcher import fuzzy_contains_trigger, match_answer_window
+from recall.scoring import current_streak_days, replay_review_state, session_run_breakdown
 from recall.srs import sm2
 
 POST_FEEDBACK_PAUSE_S = 10
 
-# Phase 5E Step 3 session pacing (AGENT.md, 2026-10-05), replacing the old
-# 60s-tail-close/5min-hard-cap window: an answer is done once 15s pass with
-# no new utterances following speech after alarm_at; if NO speech at all
+# Phase 5E Step 3 session pacing (AGENT.md, 2026-10-05): if NO speech at all
 # arrives within 2 min, the dispatch is deferred (not graded) rather than
 # forced to no_answer -- Phase 5D measured real answers sometimes taking
 # several minutes to become transcribable, so an immediate no_answer here
 # would risk discarding a genuine answer, not just a real miss.
-ANSWER_QUIET_S = 15.0
 NO_SPEECH_DEFER_S = 120.0
 PENDING_GRADE_FALLBACK_WINDOW_S = 600.0  # used only when no later dispatch exists yet to bound the window
 
-# Phase 5E Step 4 (AGENT.md, 2026-10-05): hint-prefix wording, effect still
-# unproven (tracked via Answer.hint_in_notification) -- kept as a prefix
-# rather than a suffix so a todo truncated by Bee's own display still shows
-# the instruction before the question. TODO_TEXT_MAX_CHARS is Bee's own
-# todo-text cap (a platform constraint, distinct from the ~100-char
-# question-generation length cap in recall/questions.py).
-QUESTION_PREFIX = "Recall quiz question, do not include the answer or any hints: "
+# Phase 5F answer-done rule (AGENT.md, revised 2026-10-05 after a Phase 5E
+# live test found a cross-question content bleed): an answer with speech in
+# it is "done" only once BOTH no new utterance has ARRIVED for
+# ANSWER_QUIET_S AND the last utterance's own spoken_at is at least
+# MIN_SPOKEN_AGE_S old. The arrival-only version of this rule let a
+# restated-question-then-pause answer get graded on just the restatement,
+# before the real explanation (delayed by realtime-transcript lag, Phase
+# 5D: 25-39s+) had even arrived.
+ANSWER_QUIET_S = 15.0
+MIN_SPOKEN_AGE_S = 40.0
+
+# Phase 5F hint prefix (AGENT.md, revised 2026-10-05): always the short
+# prefix; no prefix at all if it still doesn't fit TODO_TEXT_MAX_CHARS
+# (Bee's own todo-text cap, a platform constraint distinct from the
+# ~95-char question-generation length cap in recall/questions.py).
 QUESTION_PREFIX_SHORT = "Recall quiz, no hints: "
 TODO_TEXT_MAX_CHARS = 120
 
+# Phase 5F report wording (AGENT.md, revised 2026-10-05): "solid" means
+# quality >= 4 only -- SOLID_QUALITY_THRESHOLD lives in recall.scoring
+# (session_run_breakdown) since the dashboard needs the same number.
+
 
 def question_todo_text(question_text: str) -> str:
-    full = f"{QUESTION_PREFIX}{question_text}"
-    if len(full) <= TODO_TEXT_MAX_CHARS:
-        return full
-    return f"{QUESTION_PREFIX_SHORT}{question_text}"
+    short = f"{QUESTION_PREFIX_SHORT}{question_text}"
+    if len(short) <= TODO_TEXT_MAX_CHARS:
+        return short
+    return question_text  # still too long even with the short prefix -- send bare rather than truncate meaning
 
 
 def _is_approved(db, question: Question) -> bool:
@@ -181,35 +191,35 @@ def _end_session(db, client: BeeClient, session_run: SessionRun, status: str, no
     db.add(session_run)
     db.commit()
 
-    processing_count = len(
-        db.exec(
-            select(Dispatch).where(Dispatch.session_run_id == session_run.id).where(Dispatch.status == "processing")
-        ).all()
-    )
-
+    breakdown = session_run_breakdown(db, session_run.id)
     streak = current_streak_days(now)
-    report_text = f"Recall: {session_run.questions_answered} out of {session_run.questions_asked} correct today"
-    if processing_count:
-        report_text += f", {processing_count} still processing"
-    if streak > 0:
-        report_text += f", {streak} day streak"
+    report_text = (
+        f"Recall: {breakdown['answered']} answered, {breakdown['solid']} solid, "
+        f"{breakdown['needs_another_look']} need another look, {streak}-day streak"
+    )
     todo_id = _post_todo_tracked(client, report_text)
     db.add(FeedbackTodo(bee_todo_id=todo_id))
     db.commit()
 
 
-def _grade_dispatch(db, client: BeeClient, dispatch: Dispatch, question: Question, now: datetime, match: MatchResult | None = None) -> Answer:
-    """Grades one in-session dispatch, deletes its question todo, posts
-    feedback. `match` lets the caller reuse a window already classified as
-    'ready' (advance()) rather than recomputing it; defaults to a fresh
-    match using the v4 pacing constants (ANSWER_QUIET_S/NO_SPEECH_DEFER_S)
-    for any other caller."""
-    if match is None:
-        rows = db.exec(select(Utterance).where(Utterance.spoken_at >= dispatch.alarm_at).order_by(Utterance.spoken_at)).all()
-        utterances = [MatcherUtterance(id=r.id, text=r.text, spoken_at=r.spoken_at) for r in rows]
-        match = match_answer_window(utterances, alarm_at=dispatch.alarm_at, tail_close_s=ANSWER_QUIET_S, hard_cap_s=NO_SPEECH_DEFER_S)
-    answer = grade_and_persist(dispatch, question, match)
+def _persist_answer(db, dispatch: Dispatch, result: GradeResult, match: MatchResult, now: datetime) -> Answer:
+    answer = Answer(
+        dispatch_id=dispatch.id,
+        utterance_ids=[u.id for u in match.utterances],
+        raw_text=match.raw_text,
+        verdict=result.verdict,
+        rubric_points_hit=result.rubric_points_hit,
+        quality=result.quality,
+        feedback=result.feedback,
+        matched_at=now,
+    )
+    db.add(answer)
+    db.commit()
+    db.refresh(answer)
+    return answer
 
+
+def _finish_grading(db, client: BeeClient, dispatch: Dispatch, question: Question, answer: Answer, now: datetime) -> None:
     dispatch.status = "answered"
     db.add(dispatch)
     _apply_scheduling(db, question, answer, now)
@@ -227,7 +237,121 @@ def _grade_dispatch(db, client: BeeClient, dispatch: Dispatch, question: Questio
         db.add(session_run)
     db.commit()
 
+
+def _previous_dispatch(db, session_run: SessionRun, current: Dispatch) -> Dispatch | None:
+    dispatches = db.exec(
+        select(Dispatch)
+        .where(Dispatch.session_run_id == session_run.id)
+        .where(Dispatch.id < current.id)
+        .order_by(Dispatch.id.desc())
+    ).all()
+    return dispatches[0] if dispatches else None
+
+
+def _merged_match(db, previous_answer: Answer | None, current_match: MatchResult) -> MatchResult:
+    """Combines whatever the previous dispatch's existing answer already
+    has (if any) with the current match's utterances, in chronological
+    order -- used when a late-arriving answer to the previous question got
+    captured in the current question's window instead (Phase 5F)."""
+    combined: list[MatcherUtterance] = []
+    if previous_answer is not None:
+        for uid in previous_answer.utterance_ids:
+            u = db.get(Utterance, uid)
+            if u is not None:
+                combined.append(MatcherUtterance(id=u.id, text=u.text, spoken_at=u.spoken_at))
+    combined.extend(current_match.utterances)
+    combined.sort(key=lambda u: u.spoken_at)
+    raw_text = " ".join(u.text for u in combined)
+    trigger_found = any(fuzzy_contains_trigger(u.text) for u in combined)
+    return MatchResult(utterances=combined, raw_text=raw_text, trigger_found=trigger_found)
+
+
+def _reassign_to_previous(
+    db, client: BeeClient, previous: Dispatch, previous_question: Question, current_match: MatchResult, now: datetime
+) -> Answer:
+    """Phase 5F: the grader decided speech captured in the CURRENT
+    dispatch's window actually answers the PREVIOUS one instead. Merges it
+    with whatever that dispatch's answer already has (none, if it was
+    still 'processing') and regrades once, replacing -- not duplicating --
+    its Answer row. Then replays SM-2 for that question from scratch
+    (recall.scoring.replay_review_state), since the prior grade may
+    already have fed SM-2 once under a now-corrected verdict, and a single
+    incremental 'undo' isn't reliable (same reasoning as the Phase 5C
+    no_answer recompute). No new feedback todo -- the correction shows up
+    on the dashboard only, consistent with deferred-grade corrections."""
+    old_answer = db.exec(select(Answer).where(Answer.dispatch_id == previous.id)).first()
+    old_verdict = old_answer.verdict if old_answer is not None else None
+    merged = _merged_match(db, old_answer, current_match)
+
+    result = grade_match(previous_question, merged)  # plain regrade -- no further previous-of-previous lookback
+
+    if old_answer is not None:
+        old_answer.utterance_ids = [u.id for u in merged.utterances]
+        old_answer.raw_text = merged.raw_text
+        old_answer.verdict = result.verdict
+        old_answer.rubric_points_hit = result.rubric_points_hit
+        old_answer.quality = result.quality
+        old_answer.feedback = result.feedback
+        old_answer.matched_at = now
+        db.add(old_answer)
+        answer = old_answer
+    else:
+        answer = Answer(
+            dispatch_id=previous.id,
+            utterance_ids=[u.id for u in merged.utterances],
+            raw_text=merged.raw_text,
+            verdict=result.verdict,
+            rubric_points_hit=result.rubric_points_hit,
+            quality=result.quality,
+            feedback=result.feedback,
+            matched_at=now,
+        )
+        db.add(answer)
+
+    previous.status = "answered"
+    db.add(previous)
+    db.commit()
+    db.refresh(answer)
+
+    replay_review_state(db, previous_question.id, now)
+
+    session_run = db.get(SessionRun, previous.session_run_id)
+    if session_run is not None:
+        old_counted = old_verdict is not None and old_verdict != "no_answer"
+        new_counted = answer.verdict != "no_answer"
+        if new_counted and not old_counted:
+            session_run.questions_answered += 1
+            db.add(session_run)
+            db.commit()
+        elif old_counted and not new_counted:
+            session_run.questions_answered -= 1
+            db.add(session_run)
+            db.commit()
+
     return answer
+
+
+def _grade_dispatch(db, client: BeeClient, dispatch: Dispatch, question: Question, now: datetime, match: MatchResult) -> dict:
+    """Grades the current dispatch -- UNLESS the grader decides this
+    speech actually answers the PREVIOUS question (a late-arriving answer
+    whose own window closed before it finished transcribing, Phase 5F), in
+    which case it's reassigned there instead and the current dispatch is
+    left exactly as if nothing had arrived for it yet (no Answer written,
+    still 'pending'). Returns {'outcome': 'graded', 'answer': Answer} or
+    {'outcome': 'reassigned', 'previous_question_id': int}."""
+    session_run = db.get(SessionRun, dispatch.session_run_id)
+    previous = _previous_dispatch(db, session_run, dispatch)
+    previous_question = db.get(Question, previous.question_id) if previous is not None else None
+
+    result = grade_match(question, match, previous_question=previous_question)
+
+    if result.answers == "previous" and previous is not None:
+        _reassign_to_previous(db, client, previous, previous_question, match, now)
+        return {"outcome": "reassigned", "previous_question_id": previous_question.id}
+
+    answer = _persist_answer(db, dispatch, result, match, now)
+    _finish_grading(db, client, dispatch, question, answer, now)
+    return {"outcome": "graded", "answer": answer}
 
 
 def start_session(trigger: str, now: datetime | None = None) -> SessionRun | None:
@@ -260,18 +384,33 @@ def start_session(trigger: str, now: datetime | None = None) -> SessionRun | Non
 
 def _classify_window(db, dispatch: Dispatch, now: datetime) -> tuple[str, MatchResult]:
     """Classifies an open dispatch's answer window as 'wait' | 'ready' |
-    'defer' (AGENT.md v4 session pacing, Phase 5E Step 3): ready once 15s
-    pass with no new utterances following speech (or the 2-min hard cap
-    cuts off a still-ongoing answer); defer (no grading yet) if no speech
-    at all arrives by alarm_at + 2 min."""
+    'defer' (AGENT.md answer-done rule, revised Phase 5F): ready only once
+    BOTH no new utterance has ARRIVED for ANSWER_QUIET_S AND the last
+    utterance's own spoken_at is at least MIN_SPOKEN_AGE_S old (or the
+    2-min hard cap force-closes a still-ongoing answer regardless); defer
+    (no grading yet) if no speech at all arrives by alarm_at + 2 min.
+
+    Arrival is tracked via Dispatch.last_seen_utterance_id/_at rather than
+    in-memory, so it survives a daemon restart. tail_close_s is set to the
+    hard cap itself (effectively disabling the matcher's own internal
+    pruning) -- within the 2-min window everything accumulates regardless
+    of internal gaps; this function's own arrival/spoken-age logic decides
+    readiness, not the matcher's."""
     rows = db.exec(select(Utterance).where(Utterance.spoken_at >= dispatch.alarm_at).order_by(Utterance.spoken_at)).all()
     utterances = [MatcherUtterance(id=r.id, text=r.text, spoken_at=r.spoken_at) for r in rows]
-    match = match_answer_window(utterances, alarm_at=dispatch.alarm_at, tail_close_s=ANSWER_QUIET_S, hard_cap_s=NO_SPEECH_DEFER_S)
+    match = match_answer_window(utterances, alarm_at=dispatch.alarm_at, tail_close_s=NO_SPEECH_DEFER_S, hard_cap_s=NO_SPEECH_DEFER_S)
     hard_cap_at = dispatch.alarm_at + timedelta(seconds=NO_SPEECH_DEFER_S)
 
     if match.utterances:
-        quiet_for = (now - match.utterances[-1].spoken_at).total_seconds()
-        if quiet_for >= ANSWER_QUIET_S or now >= hard_cap_at:
+        last = match.utterances[-1]
+        if dispatch.last_seen_utterance_id != last.id:
+            dispatch.last_seen_utterance_id = last.id
+            dispatch.last_seen_utterance_at = now
+            db.add(dispatch)
+            db.commit()
+        arrived_quiet_for = (now - dispatch.last_seen_utterance_at).total_seconds()
+        spoken_quiet_for = (now - last.spoken_at).total_seconds()
+        if (arrived_quiet_for >= ANSWER_QUIET_S and spoken_quiet_for >= MIN_SPOKEN_AGE_S) or now >= hard_cap_at:
             return "ready", match
         return "wait", match
     if now >= hard_cap_at:
@@ -325,7 +464,17 @@ def advance(now: datetime | None = None) -> dict | None:
                     _end_session(db, client, session_run, "paused", now)
                     return {"event": "session_paused_two_deferred", "question_id": question.id}
             else:
-                _grade_dispatch(db, client, dispatch, question, now, match=match)
+                grade_result = _grade_dispatch(db, client, dispatch, question, now, match)
+                if grade_result["outcome"] == "reassigned":
+                    # Current dispatch stays open (no Answer written, still
+                    # 'pending') -- never dispatch the next question until
+                    # it's graded or pending (AGENT.md answer-done rule).
+                    db.refresh(session_run)
+                    return {
+                        "event": "reassigned_to_previous",
+                        "question_id": question.id,
+                        "previous_question_id": grade_result["previous_question_id"],
+                    }
                 time.sleep(POST_FEEDBACK_PAUSE_S)
                 db.refresh(session_run)
 

@@ -29,6 +29,8 @@ export type SessionState =
 export type ReportCard = {
   questions_asked: number;
   questions_answered: number;
+  solid: number;
+  needs_another_look: number;
   questions_processing: number;
   ended_at: string;
 };

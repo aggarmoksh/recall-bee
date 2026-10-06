@@ -30,7 +30,7 @@ from recall.db import Session as SessionModel
 from recall.matcher import DEFAULT_HARD_CAP_S
 from recall.overrides import load_excluded_sessions
 from recall.questions import reject_question, set_approval
-from recall.scoring import answered_today_count, current_streak_days, daily_goal_met
+from recall.scoring import answered_today_count, current_streak_days, daily_goal_met, session_run_breakdown
 
 READONLY_DB_URI = f"sqlite:///file:{Path(DB_PATH).resolve()}?mode=ro&uri=true"
 _readonly_engine = create_engine(READONLY_DB_URI)
@@ -132,15 +132,16 @@ def get_today() -> dict:
         ).first()
         report_card = None
         if last_completed is not None and last_completed.ended_at is not None and _to_local(last_completed.ended_at).date() == _to_local(now).date():
-            processing_count = len(
-                db.exec(
-                    select(Dispatch).where(Dispatch.session_run_id == last_completed.id).where(Dispatch.status == "processing")
-                ).all()
-            )
+            # Same breakdown the session-end report todo uses (AGENT.md
+            # Report wording, Phase 5F) -- "solid" means quality >= 4 only,
+            # so the dashboard and the todo can never disagree.
+            breakdown = session_run_breakdown(db, last_completed.id)
             report_card = {
                 "questions_asked": last_completed.questions_asked,
-                "questions_answered": last_completed.questions_answered,
-                "questions_processing": processing_count,
+                "questions_answered": breakdown["answered"],
+                "solid": breakdown["solid"],
+                "needs_another_look": breakdown["needs_another_look"],
+                "questions_processing": breakdown["processing"],
                 "ended_at": last_completed.ended_at.isoformat(),
             }
 

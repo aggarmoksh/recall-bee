@@ -56,6 +56,14 @@ class _GradeSchema(BaseModel):
     feedback: str
 
 
+class _GradeSchemaWithPrevious(BaseModel):
+    verdict: Literal["correct", "partial", "incorrect", "not_an_answer"]
+    rubric_points_hit: list[str]
+    quality: int
+    feedback: str
+    answers: Literal["current", "previous", "neither"]
+
+
 class _ShortenSchema(BaseModel):
     text: str
 
@@ -140,7 +148,9 @@ class GeminiProvider(LLMProvider):
             ],
         )
 
-    def grade_answer(self, question: GeneratedQuestion, spoken_answer: str) -> GradeResult:
+    def grade_answer(
+        self, question: GeneratedQuestion, spoken_answer: str, previous_question: GeneratedQuestion | None = None
+    ) -> GradeResult:
         from recall.prompts import render_grade_answer_prompt
 
         prompt = render_grade_answer_prompt(
@@ -149,14 +159,17 @@ class GeminiProvider(LLMProvider):
             rubric=question.rubric,
             source_excerpt=question.source_excerpt,
             answer_text=spoken_answer,
+            previous_question=previous_question.text if previous_question else None,
         )
-        result = self._generate("grade_answer", prompt, _GradeSchema)
+        schema = _GradeSchemaWithPrevious if previous_question is not None else _GradeSchema
+        result = self._generate("grade_answer", prompt, schema)
         verdict: GradeVerdict = result.verdict
         return GradeResult(
             verdict=verdict,
             rubric_points_hit=result.rubric_points_hit,
             quality=result.quality,
             feedback=result.feedback,
+            answers=getattr(result, "answers", "current"),
         )
 
     def shorten_question(self, text: str, max_chars: int) -> str:

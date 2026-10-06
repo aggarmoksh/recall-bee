@@ -44,6 +44,9 @@ class QuestionGenerationResult:
     questions: list[GeneratedQuestion]
 
 
+AnswersWhich = Literal["current", "previous", "neither"]
+
+
 @dataclass(frozen=True)
 class GradeResult:
     verdict: GradeVerdict
@@ -53,6 +56,10 @@ class GradeResult:
     rubric_points_hit: list[str]
     quality: int  # SM-2 quality scale, 0-5
     feedback: str  # <=12 words -- fits a wrist notification
+    # Phase 5F: which question this speech actually answers, only
+    # meaningful when grade_answer was given a previous_question to check
+    # against -- "current" (default) when no comparison was requested.
+    answers: AnswersWhich = "current"
 
 
 class LLMProvider(ABC):
@@ -73,11 +80,20 @@ class LLMProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def grade_answer(self, question: GeneratedQuestion, spoken_answer: str) -> GradeResult:
+    def grade_answer(
+        self, question: GeneratedQuestion, spoken_answer: str, previous_question: GeneratedQuestion | None = None
+    ) -> GradeResult:
         """Grade a spoken explain-back answer (STT-noisy, possibly
         code-switched) against the question's rubric, expected answer, and
         source excerpt. Never called for an empty answer window -- that's
-        handled in code as "no_answer" without an LLM call."""
+        handled in code as "no_answer" without an LLM call.
+
+        `previous_question`, if given (Phase 5F, after a live test found
+        realtime-transcript lag causing an answer to the PREVIOUS question
+        to arrive late and get graded against the current one instead):
+        the model also judges whether this speech actually answers
+        `previous_question` better than `question` -- returned as
+        `GradeResult.answers` ("current" | "previous" | "neither")."""
         raise NotImplementedError
 
     @abstractmethod

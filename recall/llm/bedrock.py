@@ -78,6 +78,15 @@ _GRADE_SCHEMA = {
     "required": ["verdict", "rubric_points_hit", "quality", "feedback"],
 }
 
+_GRADE_SCHEMA_WITH_PREVIOUS = {
+    "type": "object",
+    "properties": {
+        **_GRADE_SCHEMA["properties"],
+        "answers": {"type": "string", "enum": ["current", "previous", "neither"]},
+    },
+    "required": [*_GRADE_SCHEMA["required"], "answers"],
+}
+
 _SHORTEN_SCHEMA = {
     "type": "object",
     "properties": {"text": {"type": "string"}},
@@ -185,7 +194,9 @@ class BedrockProvider(LLMProvider):
             ],
         )
 
-    def grade_answer(self, question: GeneratedQuestion, spoken_answer: str) -> GradeResult:
+    def grade_answer(
+        self, question: GeneratedQuestion, spoken_answer: str, previous_question: GeneratedQuestion | None = None
+    ) -> GradeResult:
         from recall.prompts import render_grade_answer_prompt
 
         prompt = render_grade_answer_prompt(
@@ -194,14 +205,17 @@ class BedrockProvider(LLMProvider):
             rubric=question.rubric,
             source_excerpt=question.source_excerpt,
             answer_text=spoken_answer,
+            previous_question=previous_question.text if previous_question else None,
         )
-        result = self._converse_structured("grade_answer", prompt, "submit_grade", _GRADE_SCHEMA)
+        schema = _GRADE_SCHEMA_WITH_PREVIOUS if previous_question is not None else _GRADE_SCHEMA
+        result = self._converse_structured("grade_answer", prompt, "submit_grade", schema)
         verdict: GradeVerdict = result["verdict"]
         return GradeResult(
             verdict=verdict,
             rubric_points_hit=result["rubric_points_hit"],
             quality=result["quality"],
             feedback=result["feedback"],
+            answers=result.get("answers", "current"),
         )
 
     def shorten_question(self, text: str, max_chars: int) -> str:

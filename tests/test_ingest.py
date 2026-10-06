@@ -229,6 +229,32 @@ def test_upsert_utterance_handles_iso_string_spoken_at(client_and_db):
         assert u.spoken_at == BASE_TIME
 
 
+def test_upsert_conversation_tolerates_concurrent_insert_race(client_and_db, monkeypatch):
+    """Phase 5F Step 7: found live -- the 5s live poller and the 60s
+    poll_once can both see a brand-new conversation for the first time at
+    once and both try to INSERT it; whichever commits second must not
+    crash with a UNIQUE constraint violation."""
+    from recall.ingest import upsert_conversation
+
+    _, engine = client_and_db
+    with DBSession(engine) as db_a, DBSession(engine) as db_b:
+        # Simulate the race: both sessions see no existing row, both
+        # "decide" to insert concurrently -- db_a commits first.
+        data = {"id": 9001, "conversation_uuid": "race-uuid", "start_time": None, "end_time": None, "short_summary": None, "state": "CAPTURING"}
+        upsert_conversation(db_a, data)
+        db_a.commit()
+
+        # db_b's identity map doesn't know about db_a's commit -- this must
+        # not raise, and must end up with the row correctly present.
+        upsert_conversation(db_b, data)
+        db_b.commit()
+
+    with DBSession(engine) as db:
+        conv = db.get(Conversation, 9001)
+        assert conv is not None
+        assert conv.conversation_uuid == "race-uuid"
+
+
 def test_rebuild_sessions_directly_with_synthetic_utterances(client_and_db):
     _, engine = client_and_db
     with DBSession(engine) as db:

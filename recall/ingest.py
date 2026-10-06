@@ -20,6 +20,7 @@ import re
 import time
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
 from recall.bee.client import BeeClient
@@ -50,10 +51,29 @@ def _to_dt(value: int | float | str | None) -> datetime | None:
     return datetime.fromtimestamp(value / 1000, tz=UTC)
 
 
+def _ensure_conversation_row(db, conv_id: int) -> None:
+    """Guarantees a Conversation row exists for conv_id, tolerating a
+    concurrent insert race between poll_once (60s) and the 5s live poller
+    (Phase 5E Step 1) -- both can see a brand-new conversation for the
+    first time around the same moment and both try to INSERT it, and
+    whichever commits second hits a UNIQUE constraint violation (found
+    live, Phase 5F Step 7). Commits this tiny insert-or-noop immediately
+    and in isolation from the caller's own pending work (utterance
+    inserts etc.), so a conflict here never rolls back unrelated data --
+    only the other writer's already-committed row is lost, which is fine
+    since it's empty at this point regardless of which writer "won"."""
+    if db.get(Conversation, conv_id) is not None:
+        return
+    try:
+        db.add(Conversation(id=conv_id))
+        db.commit()
+    except IntegrityError:
+        db.rollback()  # the other writer won the race -- the row exists now
+
+
 def upsert_conversation(db, data: dict) -> Conversation:
+    _ensure_conversation_row(db, data["id"])
     conv = db.get(Conversation, data["id"])
-    if conv is None:
-        conv = Conversation(id=data["id"])
     conv.conversation_uuid = data.get("conversation_uuid") or conv.conversation_uuid
     conv.start_time = _to_dt(data.get("start_time")) or conv.start_time
     conv.end_time = _to_dt(data.get("end_time")) or conv.end_time

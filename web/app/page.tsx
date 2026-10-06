@@ -105,7 +105,7 @@ export default function TodayPage() {
                   Today&apos;s report
                 </span>
                 <p className="text-2xl font-semibold leading-snug">
-                  {today.report_card.questions_answered} of {today.report_card.questions_asked} answered
+                  {today.report_card.questions_answered} answered, {today.report_card.solid} solid, {today.report_card.needs_another_look} need another look
                 </p>
                 {today.report_card.questions_processing > 0 && (
                   <p className="mt-1 text-sm opacity-80">{today.report_card.questions_processing} still processing</p>

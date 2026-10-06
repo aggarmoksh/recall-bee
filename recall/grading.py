@@ -43,14 +43,28 @@ def _question_to_generated(question: Question) -> GeneratedQuestion:
     )
 
 
-def grade_match(question: Question, match: MatchResult) -> GradeResult:
+def grade_match(question: Question, match: MatchResult, previous_question: Question | None = None) -> GradeResult:
     """Pure grading step (no DB writes): no_answer short-circuits without an
-    LLM call; otherwise delegates to the configured provider."""
+    LLM call; otherwise delegates to the configured provider.
+
+    `previous_question`, if given (Phase 5F): also asks the grader whether
+    this speech actually answers the previous question instead -- if so,
+    `result.answers == "previous"` and the incomplete_capture word-count
+    override is skipped here, since the caller (recall.session) is about
+    to regrade this content against the previous question entirely fresh,
+    not finalize it against the current one."""
     if not match.raw_text.strip():
         return GradeResult(verdict="no_answer", rubric_points_hit=[], quality=0, feedback=NO_ANSWER_FEEDBACK)
 
     provider = get_provider()
-    result = provider.grade_answer(_question_to_generated(question), match.raw_text)
+    result = provider.grade_answer(
+        _question_to_generated(question),
+        match.raw_text,
+        previous_question=_question_to_generated(previous_question) if previous_question is not None else None,
+    )
+
+    if result.answers == "previous":
+        return result
 
     word_count = len(match.raw_text.split())
     if word_count < MIN_WORDS_FOR_CONFIDENT_GRADE and result.verdict != "correct":
@@ -61,6 +75,7 @@ def grade_match(question: Question, match: MatchResult) -> GradeResult:
         rubric_points_hit=result.rubric_points_hit,
         quality=result.quality,
         feedback=_truncate_feedback(result.feedback),
+        answers=result.answers,
     )
 
 
