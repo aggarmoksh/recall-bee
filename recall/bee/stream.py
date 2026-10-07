@@ -15,8 +15,19 @@ from recall.bee.process import kill_tree, resolve_bee_exe, warn_on_orphans
 
 logger = logging.getLogger("recall.bee.stream")
 
-RECONNECT_BACKOFF_BASE_S = 1.0
-RECONNECT_BACKOFF_MAX_S = 30.0
+# Phase 5G Step 4 (AGENT.md, 2026-10-07): fixed 5s/15s/60s-cap schedule,
+# replacing the old 1s-doubling-to-30s backoff -- chosen to match the
+# daemon's other supervisor backoffs (recall.run._supervised) so every
+# reconnect path in the system behaves the same way.
+RECONNECT_BACKOFF_STEPS_S = [5.0, 15.0, 60.0]
+
+# Phase 5G Step 4: asyncio.StreamReader's default internal buffer cap is
+# 64KiB -- the 2-day check's second crash (FRICTION_LOG.md, 2026-10-07)
+# was `ValueError: Separator is not found, and chunk exceed the limit` from
+# a single stream line exceeding that, propagating out of readline()
+# uncaught and killing the whole daemon. Raised well past anything a
+# single JSON event should ever need.
+STREAM_READ_BUFFER_LIMIT = 16 * 1024 * 1024
 
 
 def parse_line(line: str) -> dict | None:
@@ -39,7 +50,7 @@ def parse_line(line: str) -> dict | None:
 
 
 async def stream_events(types: str = "all") -> AsyncIterator[dict]:
-    backoff = RECONNECT_BACKOFF_BASE_S
+    backoff_index = 0
     while True:
         warn_on_orphans()
         bee_exe = resolve_bee_exe()
@@ -47,21 +58,32 @@ async def stream_events(types: str = "all") -> AsyncIterator[dict]:
             bee_exe, "stream", "--json", "--types", types,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            limit=STREAM_READ_BUFFER_LIMIT,
         )
         try:
             assert proc.stdout is not None
             while True:
-                raw = await proc.stdout.readline()
+                try:
+                    raw = await proc.stdout.readline()
+                except Exception as e:
+                    # Never let a read failure (e.g. a line still over the
+                    # raised limit, or a decode-adjacent asyncio error)
+                    # escape this generator -- it would otherwise propagate
+                    # out of consume_stream_live() and, pre-Phase-5G, the
+                    # whole daemon process (FRICTION_LOG.md Incident 2).
+                    logger.warning("bee stream read failed (%r), reconnecting", e)
+                    break
                 if not raw:
                     break  # subprocess ended
                 event = parse_line(raw.decode("utf-8", errors="replace"))
                 if event is None:
                     continue
-                backoff = RECONNECT_BACKOFF_BASE_S  # reset after any successful event
+                backoff_index = 0  # reset after any successful event
                 yield event
         finally:
             kill_tree(proc.pid)
 
+        backoff = RECONNECT_BACKOFF_STEPS_S[min(backoff_index, len(RECONNECT_BACKOFF_STEPS_S) - 1)]
         logger.warning("bee stream subprocess ended, reconnecting in %.1fs", backoff)
         await asyncio.sleep(backoff)
-        backoff = min(backoff * 2, RECONNECT_BACKOFF_MAX_S)
+        backoff_index += 1

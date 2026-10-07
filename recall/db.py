@@ -44,6 +44,12 @@ class Utterance(SQLModel, table=True):
     spoken_at: datetime = Field(index=True)
     speaker: str | None = None
     created_at: datetime | None = None
+    # Phase 5G Step 2 (AGENT.md, 2026-10-07): once an utterance feeds a
+    # graded Answer, it is claimed forever -- excluded from every future
+    # answer-window query, so it can never be re-matched into a different
+    # dispatch (the structural bug behind the 2-day-check Incident 3
+    # infinite reassignment loop, FRICTION_LOG.md).
+    claimed_by_dispatch_id: int | None = Field(default=None, foreign_key="dispatch.id", index=True)
 
 
 class Session(SQLModel, table=True):
@@ -83,7 +89,7 @@ class Dispatch(SQLModel, table=True):
     question_id: int = Field(foreign_key="question.id", index=True)
     bee_todo_id: int = Field(index=True, unique=True)
     alarm_at: datetime
-    status: str = "pending"  # pending / processing (deferred) / answered
+    status: str = "pending"  # pending / answered / needs_review (Phase 5G)
     dispatched_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     # v4 (Phase 5C): which mini-session this question belongs to. NULL for
     # pre-v4 historical rows (the old timed-dispatch model had no sessions).
@@ -95,6 +101,12 @@ class Dispatch(SQLModel, table=True):
     # >=40s old, to tolerate realtime-transcript lag (Phase 5D: 25-39s+).
     last_seen_utterance_id: int | None = None
     last_seen_utterance_at: datetime | None = None
+    # Phase 5G Step 2 (AGENT.md, 2026-10-07): how many times the grader has
+    # actually been called for this dispatch. Capped at
+    # session.MAX_GRADE_CALLS_PER_DISPATCH -- past that, the dispatch is
+    # marked needs_review instead of being graded again, so a future bug
+    # of Incident 3's shape fails loudly instead of looping.
+    grade_call_count: int = 0
 
 
 class Answer(SQLModel, table=True):
@@ -144,6 +156,17 @@ class SessionRun(SQLModel, table=True):
     status: str = "active"  # active | completed | ended_no_answer
     questions_asked: int = 0
     questions_answered: int = 0  # non-no_answer verdicts
+
+
+class Heartbeat(SQLModel, table=True):
+    """Singleton row (id always 1): when the daemon's fast loop last
+    completed a tick. Lets `recall.status` and the dashboard detect the
+    daemon having gone silent (2-day check Incidents 1-2, FRICTION_LOG.md,
+    2026-10-07) without relying on the OS process list, which says nothing
+    about whether the asyncio loops inside it are actually still ticking."""
+
+    id: int = Field(default=1, primary_key=True)
+    last_tick_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class StingTodo(SQLModel, table=True):

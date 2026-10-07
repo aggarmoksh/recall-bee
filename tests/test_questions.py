@@ -303,6 +303,53 @@ def test_answer_window_utterances_excluded_from_transcript(db_engine, monkeypatc
     assert "genuine new lecture content" in captured_transcript["text"]
 
 
+def test_session_run_window_excludes_unmatched_operator_speech(db_engine, monkeypatch):
+    """Phase 5G Step 3 (AGENT.md, 2026-10-07): session 28 contained the
+    operator's own spoken quiz answers that never landed inside any
+    Answer's utterance_ids (e.g. a no_answer dispatch, or speech outside
+    every answer window) -- the old per-utterance exclusion let that
+    content straight through into the next round of question generation.
+    A SessionRun's whole window (started_at-1min to ended_at+10min) is now
+    excluded regardless of whether any individual utterance was ever
+    matched."""
+    from recall.db import SessionRun
+
+    with DBSession(db_engine) as db:
+        db.add(Conversation(id=1))
+        db.add_all(
+            [
+                _u(1, "unmatched operator answer never graded", 30),  # inside the SessionRun window, no Answer
+                _u(2, "genuine new lecture content", 700),  # well after ended_at + 10 min
+            ]
+        )
+        session = SessionModel(start_at=BASE, end_at=BASE + timedelta(seconds=800), conversation_ids=[1])
+        db.add(session)
+        db.add(
+            SessionRun(
+                started_at=BASE + timedelta(seconds=10),
+                ended_at=BASE + timedelta(seconds=60),
+                trigger="tick",
+                status="ended_no_answer",
+            )
+        )
+        db.commit()
+        db.refresh(session)
+        session_id = session.id
+
+    captured_transcript = {}
+
+    class _CapturingProvider(_FakeProvider):
+        def generate_questions(self, transcript, n, target_language=None):
+            captured_transcript["text"] = transcript
+            return super().generate_questions(transcript, n, target_language)
+
+    _patch(monkeypatch, db_engine, _CapturingProvider("lecture_study", n_questions=1))
+    generate_for_session(session_id, n=1)
+
+    assert "unmatched operator answer" not in captured_transcript["text"]
+    assert "genuine new lecture content" in captured_transcript["text"]
+
+
 def test_session_with_only_excluded_utterances_marked_no_content_not_left_null(db_engine, monkeypatch):
     """Phase 5C fix: a session made entirely of self-fed/excluded utterances
     (e.g. a spoken answer that opened its own Session row) must still get

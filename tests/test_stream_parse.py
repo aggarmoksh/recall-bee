@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from recall.bee import stream as stream_module
 from recall.bee.stream import parse_line
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "bee_stream_sample.ndjson"
@@ -48,3 +49,82 @@ def test_unknown_event_type_does_not_crash():
     event = parse_line('{"type":"some-totally-new-event-type","payload":{"nested":[1,2,3]}}')
     assert event is not None
     assert event["type"] == "some-totally-new-event-type"
+
+
+# Phase 5G Step 4 (AGENT.md, 2026-10-07): regression tests for the 2-day
+# check's second crash -- a single long stream line exceeded asyncio's
+# default readline() buffer and the resulting ValueError propagated all
+# the way out, killing the whole daemon (FRICTION_LOG.md Incident 2).
+
+
+class _FakeStdout:
+    def __init__(self, lines: list[bytes], raise_once_at: int | None = None):
+        self._lines = list(lines)
+        self._raise_once_at = raise_once_at
+        self._calls = 0
+
+    async def readline(self) -> bytes:
+        if self._raise_once_at is not None and self._calls == self._raise_once_at:
+            self._calls += 1
+            raise ValueError("Separator is not found, and chunk exceed the limit")
+        self._calls += 1
+        if not self._lines:
+            return b""
+        return self._lines.pop(0)
+
+
+class _FakeProc:
+    def __init__(self, lines: list[bytes], raise_once_at: int | None = None):
+        self.pid = 999999
+        self.stdout = _FakeStdout(lines, raise_once_at=raise_once_at)
+
+
+def _patch_subprocess_plumbing(monkeypatch, procs: list[_FakeProc]):
+    captured_kwargs = {}
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return procs.pop(0)
+
+    monkeypatch.setattr(stream_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(stream_module, "resolve_bee_exe", lambda: "bee")
+    monkeypatch.setattr(stream_module, "warn_on_orphans", lambda: None)
+    monkeypatch.setattr(stream_module, "kill_tree", lambda pid: None)
+    monkeypatch.setattr(stream_module.asyncio, "sleep", _instant_sleep)
+    return captured_kwargs
+
+
+async def _instant_sleep(_seconds):
+    return None
+
+
+async def test_stream_events_parses_a_100kb_line(monkeypatch):
+    big_text = "x" * (100 * 1024)
+    line = (f'{{"type":"new-utterance","text":"{big_text}"}}\n').encode()
+    procs = [_FakeProc([line, b""])]
+    captured_kwargs = _patch_subprocess_plumbing(monkeypatch, procs)
+
+    gen = stream_module.stream_events()
+    event = await gen.__anext__()
+    await gen.aclose()
+
+    assert len(event["text"]) == 100 * 1024
+    assert captured_kwargs["limit"] == stream_module.STREAM_READ_BUFFER_LIMIT
+
+
+async def test_stream_events_reconnects_after_a_reader_exception(monkeypatch):
+    good_line = b'{"type":"new-utterance","text":"before the crash"}\n'
+    after_reconnect = b'{"type":"new-utterance","text":"after reconnect"}\n'
+    procs = [
+        _FakeProc([good_line], raise_once_at=1),  # readline() raises on its 2nd call
+        _FakeProc([after_reconnect, b""]),
+    ]
+    _patch_subprocess_plumbing(monkeypatch, procs)
+
+    gen = stream_module.stream_events()
+    first = await gen.__anext__()
+    second = await gen.__anext__()
+    await gen.aclose()
+
+    assert first["text"] == "before the crash"
+    assert second["text"] == "after reconnect"  # reconnected instead of propagating the exception

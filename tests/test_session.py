@@ -4,9 +4,9 @@ import pytest
 from sqlmodel import Session as DBSession
 from sqlmodel import SQLModel, create_engine, select
 
-from recall.db import Answer, Conversation, Dispatch, FeedbackTodo, Question
+from recall.db import Answer, Conversation, Dispatch, Question
 from recall.db import Session as SessionModel
-from recall.db import SessionRun
+from recall.db import SessionRun, Utterance
 from recall.llm.base import GradeResult, LLMProvider
 
 BASE = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
@@ -168,18 +168,16 @@ def test_start_session_refuses_when_already_active(db_engine):
         assert len(db.exec(select(SessionRun)).all()) == 1
 
 
-def _answer_open_dispatch(db_engine, bee_store, verdict, quality, rubric_hit=None, raw_text="a reasonably long spoken answer with plenty of extra words included here to be safe"):
+def _answer_open_dispatch(db_engine, bee_store, verdict, quality, rubric_hit=None, raw_text="a reasonably long spoken answer with plenty of extra words included here to be safe", spoken_offset_s=5):
     """Simulates a spoken answer arriving for whatever dispatch is
     currently open, by seeding a matching utterance."""
-    from recall.db import Utterance
-
     with DBSession(db_engine) as db:
         open_d = db.exec(select(Dispatch).where(Dispatch.status == "pending")).first()
-        db.add(Utterance(id=open_d.id * 1000, conversation_id=1, conversation_uuid="x", text=raw_text, spoken_at=open_d.alarm_at + timedelta(seconds=5)))
+        db.add(Utterance(id=open_d.id * 1000, conversation_id=1, conversation_uuid="x", text=raw_text, spoken_at=open_d.alarm_at + timedelta(seconds=spoken_offset_s)))
         db.commit()
 
 
-DEFER_AFTER_S = 125  # just past the 2-min no-speech hard cap
+NO_ANSWER_AFTER_S = 245  # just past the 4-min (240s) no-speech hard cap (Phase 5G)
 
 # Phase 5F answer-done rule needs BOTH no new arrival for 15s AND the
 # utterance's own spoken_at to be >=40s old -- and arrival is tracked from
@@ -241,122 +239,72 @@ def test_quota_hit_ends_session_completed_and_posts_report(db_engine, bee_store,
     assert "2 answered, 2 solid, 0 need another look" in report_texts[0]
 
 
-def test_single_deferred_question_does_not_end_session(db_engine, bee_store, patch_provider):
-    """Phase 5E Step 3: one deferred (no-speech-by-2min) dispatch just
-    moves on to the next question -- it takes TWO consecutive deferred
-    dispatches to pause the session, not one."""
+def test_utterance_arriving_at_3min_is_graded_not_missed(db_engine, bee_store, patch_provider):
+    """Phase 5G Step 1 required test: speech arriving well after the old
+    2-min defer threshold, but before the new 4-min no_answer timeout,
+    must still be graded normally -- not missed."""
     from recall.session import advance, start_session
 
-    _seed_questions(db_engine, 3)
+    _seed_questions(db_engine, 1)
+    patch_provider(GradeResult(verdict="partial", rubric_points_hit=["a"], quality=3, feedback="Missed b."))
 
     now = BASE
-    run = start_session("tick", now=now)
-    defer_at = now + timedelta(seconds=DEFER_AFTER_S)
+    start_session("tick", now=now)
+    alarm_at = _open_dispatch_alarm_at(db_engine)
 
-    # No utterance seeded -- nothing arrives within the 2-min hard cap.
-    result = advance(now=defer_at)
+    _answer_open_dispatch(db_engine, bee_store, "partial", 3, spoken_offset_s=180)  # 3 min in
 
-    assert result["event"] == "deferred_next_question_dispatched"
+    result = advance(now=alarm_at + timedelta(seconds=184))  # registers arrival, still waiting
+    assert result is None
+
+    result = advance(now=alarm_at + timedelta(seconds=230))  # 46s arrival-quiet, 50s spoken-quiet, still <240s
+    assert result is not None
+    assert result["event"] == "session_completed_exhausted"  # only 1 question -- grading it ends the session
+
     with DBSession(db_engine) as db:
-        run_row = db.get(SessionRun, run.id)
-        assert run_row.status == "active"
-        assert run_row.questions_asked == 2
+        run_row = db.exec(select(SessionRun)).first()
+        assert run_row.status == "completed"  # NOT ended_no_answer -- this was a real, graded answer
         d1 = db.exec(select(Dispatch).where(Dispatch.question_id == 1)).first()
-        assert d1.status == "processing"
-        # Not graded yet -- no Answer row at all, no SM-2 touched.
-        assert db.exec(select(Answer).where(Answer.dispatch_id == d1.id)).first() is None
-        q1 = db.get(Question, 1)
-        assert q1.active is True
+        answer = db.exec(select(Answer).where(Answer.dispatch_id == d1.id)).first()
+        assert answer.verdict == "partial"  # graded on its real content, not missed
 
 
-def test_two_consecutive_deferred_pauses_session_no_penalty(db_engine, bee_store, patch_provider):
+def test_no_answer_after_4min_silence_ends_session_cleanly_no_penalty(db_engine, bee_store, patch_provider):
+    """Phase 5G Step 1 required test: no speech at all by alarm_at + 4 min
+    -> no_answer, no SM-2 change, session ends cleanly, remaining due
+    questions stay due (no Dispatch created for them)."""
+    from recall.db import ReviewState
     from recall.session import advance, start_session
 
-    _seed_questions(db_engine, 3)
-
+    _seed_questions(db_engine, 2)
     now = BASE
     run = start_session("tick", now=now)
-    defer_at = now + timedelta(seconds=DEFER_AFTER_S)
+    alarm_at = _open_dispatch_alarm_at(db_engine)
 
-    result = advance(now=defer_at)
-    assert result["event"] == "deferred_next_question_dispatched"
+    result = advance(now=alarm_at + timedelta(seconds=NO_ANSWER_AFTER_S))
 
-    result = advance(now=defer_at + timedelta(seconds=DEFER_AFTER_S))
-    assert result["event"] == "session_paused_two_deferred"
-
+    assert result["event"] == "session_ended_no_answer"
     with DBSession(db_engine) as db:
         run_row = db.get(SessionRun, run.id)
-        assert run_row.status == "paused"
-        assert run_row.questions_asked == 2
+        assert run_row.status == "ended_no_answer"
+        assert run_row.questions_asked == 1
         assert run_row.questions_answered == 0
-        for qid in (1, 2):
-            d = db.exec(select(Dispatch).where(Dispatch.question_id == qid)).first()
-            assert d.status == "processing"
+
+        d1 = db.exec(select(Dispatch).where(Dispatch.question_id == 1)).first()
+        assert d1.status == "answered"
+        a1 = db.exec(select(Answer).where(Answer.dispatch_id == d1.id)).first()
+        assert a1.verdict == "no_answer"
+        assert db.exec(select(ReviewState).where(ReviewState.question_id == 1)).first() is None  # SM-2 untouched
+
+        # Question 2 was never dispatched -- it stays due for later.
+        assert db.exec(select(Dispatch).where(Dispatch.question_id == 2)).first() is None
+        q2 = db.get(Question, 2)
+        assert q2.active is True
 
     store, _ = bee_store
     report_texts = [v["text"] for v in store.values() if "need another look" in v["text"]]
     assert len(report_texts) == 1
     assert "0 answered, 0 solid, 0 need another look" in report_texts[0]
-
-
-def test_deferred_dispatch_graded_later_from_final_transcript(db_engine, bee_store, patch_provider):
-    """Phase 5E Step 3: a deferred dispatch is graded in the background
-    once the final transcript shows an utterance landing inside
-    [this alarm_at, next alarm_at) -- matched by spoken_at, no feedback
-    todo posted (dashboard-only)."""
-    from recall.db import Utterance
-    from recall.session import advance, grade_pending_dispatches, start_session
-
-    _seed_questions(db_engine, 3)
-    patch_provider(GradeResult(verdict="partial", rubric_points_hit=["a"], quality=3, feedback="Missed b."))
-
-    now = BASE
-    start_session("tick", now=now)
-    defer_at = now + timedelta(seconds=DEFER_AFTER_S)
-    result = advance(now=defer_at)  # question 1 deferred, question 2 dispatched
-    assert result["event"] == "deferred_next_question_dispatched"
-
-    store_before, _ = bee_store
-    todos_before = len(store_before)
-
-    with DBSession(db_engine) as db:
-        d1 = db.exec(select(Dispatch).where(Dispatch.question_id == 1)).first()
-        # A late-arriving final-transcript utterance, inside [d1.alarm_at, d2.alarm_at).
-        db.add(Utterance(id=99001, conversation_id=1, conversation_uuid="x", text="a late answer that finally came through with plenty of extra words to be safe", spoken_at=d1.alarm_at + timedelta(seconds=30)))
-        db.commit()
-
-    results = grade_pending_dispatches(now=defer_at + timedelta(seconds=60))
-    assert len(results) == 1
-    assert results[0]["question_id"] == 1
-    assert results[0]["verdict"] == "partial"
-
-    with DBSession(db_engine) as db:
-        d1 = db.exec(select(Dispatch).where(Dispatch.question_id == 1)).first()
-        assert d1.status == "answered"
-        answer = db.exec(select(Answer).where(Answer.dispatch_id == d1.id)).first()
-        assert answer.verdict == "partial"
-        run_row = db.exec(select(SessionRun)).first()
-        assert run_row.questions_answered == 1  # updated even though the session already moved on
-
-    # No new feedback todo posted for the deferred grade -- dashboard-only.
-    store_after, _ = bee_store
-    assert len(store_after) == todos_before
-
-
-def test_grade_pending_dispatches_is_a_noop_when_nothing_new_arrived(db_engine, bee_store, patch_provider):
-    from recall.session import advance, grade_pending_dispatches, start_session
-
-    _seed_questions(db_engine, 3)
-    now = BASE
-    start_session("tick", now=now)
-    defer_at = now + timedelta(seconds=DEFER_AFTER_S)
-    advance(now=defer_at)
-
-    results = grade_pending_dispatches(now=defer_at + timedelta(seconds=30))
-    assert results == []
-    with DBSession(db_engine) as db:
-        d1 = db.exec(select(Dispatch).where(Dispatch.question_id == 1)).first()
-        assert d1.status == "processing"  # still pending resolution
 
 
 def test_restart_mid_session_resumes_same_open_dispatch(db_engine, bee_store, patch_provider):
@@ -381,30 +329,28 @@ def test_restart_mid_session_resumes_same_open_dispatch(db_engine, bee_store, pa
         assert resumed_dispatch.id == original_dispatch_id
 
 
-def test_recover_defers_stale_dispatch_and_pauses_session(db_engine, bee_store, patch_provider):
-    """Phase 5E: recover() no longer forces an immediate no_answer -- a
-    sleep/wake gap can be long, and a real answer might just be slow to
-    transcribe (Phase 5D). It defers instead (graded later from the final
-    transcript, same as any other deferred dispatch) and pauses the
-    session, no penalty."""
+def test_recover_resolves_no_answer_after_long_sleep_gap(db_engine, bee_store, patch_provider):
+    """Phase 5G: recover() is now a thin wrapper around advance() -- a long
+    sleep/wake gap just means the open dispatch's window is classified the
+    same way a normal late poll would: no_answer once past the 4-min hard
+    cap, ending the session cleanly."""
     from recall.session import recover, start_session
 
     _seed_questions(db_engine, 3)
     now = BASE
     run = start_session("tick", now=now)
 
-    # Simulate a laptop-sleep gap: recover() is called much later, well
-    # past the answer window, even though nothing ever polled in between.
     much_later = now + timedelta(hours=6)
     result = recover(now=much_later)
 
-    assert result["event"] == "recovered_stale_session"
+    assert result["event"] == "session_ended_no_answer"
     with DBSession(db_engine) as db:
         run_row = db.get(SessionRun, run.id)
-        assert run_row.status == "paused"
+        assert run_row.status == "ended_no_answer"
         d1 = db.exec(select(Dispatch).where(Dispatch.question_id == 1)).first()
-        assert d1.status == "processing"
-        assert db.exec(select(Answer)).first() is None  # not graded yet -- deferred
+        assert d1.status == "answered"
+        a1 = db.exec(select(Answer).where(Answer.dispatch_id == d1.id)).first()
+        assert a1.verdict == "no_answer"
 
 
 def test_recover_is_a_noop_when_window_has_not_passed_yet(db_engine, bee_store, patch_provider):
@@ -434,7 +380,6 @@ def test_late_arriving_speech_never_closes_the_window_early(db_engine, bee_store
     advance()) well after they were actually spoken, staggered close
     enough together that the 15s-no-new-arrival condition never gets a
     chance to be satisfied -- the window must stay open throughout."""
-    from recall.db import Utterance
     from recall.session import advance, start_session
 
     _seed_questions(db_engine, 1)
@@ -463,8 +408,6 @@ def test_late_arriving_speech_never_closes_the_window_early(db_engine, bee_store
 
     with DBSession(db_engine) as db:
         assert db.exec(select(Answer)).first() is None  # never graded while speech kept arriving
-
-
 
 
 def test_feedback_text_is_plain_words_no_symbols(db_engine, bee_store, patch_provider):
@@ -498,9 +441,9 @@ def test_feedback_text_is_plain_words_no_symbols(db_engine, bee_store, patch_pro
 
 
 class _SequencedProvider(LLMProvider):
-    """Returns a different GradeResult per call, in order -- for
-    reassignment tests, where the grader's decision differs across calls
-    within one advance() cascade (current question, then previous)."""
+    """Returns a different GradeResult per call, in order -- for tests
+    where the grader's diagnostic answer differs across calls within one
+    advance() cascade (current question, then the next one)."""
 
     def __init__(self, results: list[GradeResult]):
         self.results = list(results)
@@ -517,18 +460,19 @@ class _SequencedProvider(LLMProvider):
         raise NotImplementedError
 
 
-def test_answer_reassigned_to_previous_question_when_grader_says_previous(db_engine, bee_store, monkeypatch):
-    """Phase 5F Step 2: a late-arriving real answer to Q1, captured in
-    Q2's window (the exact Phase 5E live-test bleed), gets reassigned to
-    Q1's dispatch -- merged with Q1's existing (wrong) answer, regraded
-    once, while Q2 is left exactly as if nothing had arrived for it."""
+def test_grader_diagnostic_previous_is_logged_but_never_moves_data(db_engine, bee_store, monkeypatch):
+    """Phase 5G Step 1: the grader's current|previous|neither field is kept
+    as a diagnostic only -- even when it says 'previous', the current
+    dispatch is graded on ITS OWN content and the previous dispatch's
+    Answer is left exactly as it already was. This replaces Phase 5F's
+    live reassignment, which turned out to loop forever in production
+    (FRICTION_LOG.md, 2-day check Incident 3)."""
     from recall.session import advance, start_session
 
     provider = _SequencedProvider(
         [
             GradeResult(verdict="not_an_answer", rubric_points_hit=[], quality=0, feedback="off-topic", answers="current"),
             GradeResult(verdict="partial", rubric_points_hit=["a"], quality=3, feedback="Missed b.", answers="previous"),
-            GradeResult(verdict="correct", rubric_points_hit=["a", "b"], quality=5, feedback="Nailed it.", answers="current"),
         ]
     )
     monkeypatch.setattr("recall.grading.get_provider", lambda: provider)
@@ -537,11 +481,7 @@ def test_answer_reassigned_to_previous_question_when_grader_says_previous(db_eng
     now = BASE
     start_session("tick", now=now)
 
-    # Q1: a restatement-only "answer" -- graded not_an_answer (no previous question exists yet, it's the first dispatch).
-    _answer_open_dispatch(
-        db_engine, bee_store, "not_an_answer", 0,
-        raw_text="restating question one only with some extra words included here to be long enough",
-    )
+    _answer_open_dispatch(db_engine, bee_store, "not_an_answer", 0, raw_text="restating question one only with some extra words included here to be long enough")
     result = _advance_to_ready(_open_dispatch_alarm_at(db_engine))
     assert result["event"] == "next_question_dispatched"
 
@@ -551,159 +491,153 @@ def test_answer_reassigned_to_previous_question_when_grader_says_previous(db_eng
         assert a1_before.verdict == "not_an_answer"
         a1_before_id = a1_before.id
 
-    # Q2's window actually captures Q1's real, late-arriving answer.
-    _answer_open_dispatch(
-        db_engine, bee_store, "partial", 3,
-        raw_text="the real answer to question one arrived late with plenty of extra words here",
-    )
+    _answer_open_dispatch(db_engine, bee_store, "partial", 3, raw_text="Q2's own content, even though the grader flags it as answering Q1 instead")
     result = _advance_to_ready(_open_dispatch_alarm_at(db_engine))
-    assert result["event"] == "reassigned_to_previous"
-    assert result["previous_question_id"] == 1
+    assert result["event"] == "session_completed_exhausted"
 
     with DBSession(db_engine) as db:
+        # Q1's Answer is untouched -- no merge, no regrade, same row.
         d1 = db.exec(select(Dispatch).where(Dispatch.question_id == 1)).first()
         a1_after = db.exec(select(Answer).where(Answer.dispatch_id == d1.id)).first()
-        assert a1_after.id == a1_before_id  # same row, updated in place -- not duplicated
-        assert a1_after.verdict == "correct"  # corrected by the regrade
-        assert "restating question one" in a1_after.raw_text
-        assert "real answer to question one" in a1_after.raw_text  # merged, chronological
+        assert a1_after.id == a1_before_id
+        assert a1_after.verdict == "not_an_answer"
 
+        # Q2 is graded on its own GradeResult, literally -- "answers:
+        # previous" never redirects the data anywhere.
         d2 = db.exec(select(Dispatch).where(Dispatch.question_id == 2)).first()
-        assert d2.status == "pending"  # current dispatch untouched -- still open
-        assert db.exec(select(Answer).where(Answer.dispatch_id == d2.id)).first() is None
+        a2 = db.exec(select(Answer).where(Answer.dispatch_id == d2.id)).first()
+        assert a2.verdict == "partial"
+        assert "Q2's own content" in a2.raw_text
 
         run_row = db.exec(select(SessionRun)).first()
-        assert run_row.questions_answered == 1  # Q1 counts once (not_an_answer didn't, correct does) -- not double-counted
+        # not_an_answer still counts as "answered" (only no_answer doesn't,
+        # AGENT.md) -- both Q1 and Q2 count, unchanged by Phase 5G.
+        assert run_row.questions_answered == 2
 
-    assert [c[0] for c in provider.calls] == ["Question 1?", "Question 2?", "Question 1?"]
-    assert provider.calls[1][1] == "Question 1?"  # Q2's grade call was given Q1 as previous_question
-    assert provider.calls[2][1] is None  # the regrade call is a plain grade, no further lookback
+    assert provider.calls[1][1] == "Question 1?"  # the diagnostic lookup still happened
 
 
-def test_reassignment_regrade_replays_sm2_from_scratch(db_engine, bee_store, monkeypatch):
-    """The first (wrong) grade of Q1 may already have fed SM-2 once;
-    reassignment must leave ReviewState reflecting only the corrected
-    grade, not both stacked on top of each other."""
-    from recall.db import ReviewState
-    from recall.session import advance, start_session
+def test_classify_window_excludes_already_claimed_utterances(db_engine, bee_store):
+    """Phase 5G Step 2: once an utterance is claimed by some Answer, it is
+    excluded from every future answer-window query -- the structural fix
+    for Incident 3 (a dispatch re-matching the same already-used
+    utterances forever once its original hard cap had elapsed)."""
+    from recall.session import _classify_window, start_session
 
-    provider = _SequencedProvider(
-        [
-            GradeResult(verdict="incorrect", rubric_points_hit=[], quality=1, feedback="Wrong.", answers="current"),
-            GradeResult(verdict="partial", rubric_points_hit=["a"], quality=3, feedback="Missed b.", answers="previous"),
-            GradeResult(verdict="correct", rubric_points_hit=["a", "b"], quality=5, feedback="Nailed it.", answers="current"),
-        ]
-    )
-    monkeypatch.setattr("recall.grading.get_provider", lambda: provider)
-
-    _seed_questions(db_engine, 2)
-    now = BASE
-    start_session("tick", now=now)
-    _answer_open_dispatch(db_engine, bee_store, "incorrect", 1, raw_text="a wrong answer to question one with plenty of extra words here")
-    _advance_to_ready(_open_dispatch_alarm_at(db_engine))
-
+    _seed_questions(db_engine, 1)
+    start_session("tick", now=BASE)
     with DBSession(db_engine) as db:
-        rs = db.exec(select(ReviewState).where(ReviewState.question_id == 1)).first()
-        assert rs is not None  # SM-2 already touched once, under the wrong verdict
-
-    _answer_open_dispatch(db_engine, bee_store, "partial", 3, raw_text="the real correct answer to question one arrived late with extra words")
-    result = _advance_to_ready(_open_dispatch_alarm_at(db_engine))
-    assert result["event"] == "reassigned_to_previous"
-
-    with DBSession(db_engine) as db:
-        rs = db.exec(select(ReviewState).where(ReviewState.question_id == 1)).first()
-        # Replayed from scratch with ONLY the corrected quality=5 grade:
-        # ease_factor=2.6 (2.5 + 0.1). If the wrong quality=1 grade had
-        # also fed SM-2 first (double-counted), ease_factor would be 2.06
-        # instead (1.96 after quality=1, +0.1 for quality=5) -- a real,
-        # observable difference, not just an internal detail.
-        assert rs.repetitions == 1
-        assert rs.interval_days == 1
-        assert rs.ease_factor == pytest.approx(2.6)
-
-
-# Phase 5F Step 2: real fixture from the Phase 5E live test's actual bleed
-# (session 3, dispatches 16-18 in the live recall.db). No redaction needed
-# -- the content is generic chemistry/history trivia from AI/ML-interview
-# practice material, not personal or identifying. Reproduced here to prove
-# the reassignment logic actually fixes the exact case that motivated it.
-_Q2_CHOCOLATE_TEXT = "Using chocolate as an example, explain what polymorphs are and how they affect properties."
-_Q2_RESTATEMENT = "So, the question is explaining the chocolate as an example with a few more words here"
-_Q3_RITONAVIR_TEXT = "Why was discovering Ritonavir Form II problematic for Abbott despite being chemically identical?"
-_Q3_RAW_TEXT_CAPTURED = (
-    "So this is exactly how polymorphs works when polymorphs can also have can also be "
-    "same substance but have different properties and make different substances."
-)
-
-
-def test_live_test_q3_bleed_fixture_gets_reassigned_to_q2(db_engine, bee_store, monkeypatch):
-    """Reproduces dispatch 17 from the Phase 5E live test almost exactly:
-    Q2 (chocolate polymorphs) only captured a restatement and graded
-    incomplete_capture/not_an_answer; the operator's real polymorphs
-    explanation arrived late and was captured in Q3's (Ritonavir) window
-    instead, where it was wrongly graded 'off-topic' for Ritonavir. With
-    Phase 5F's reassignment, that same captured text should now correctly
-    land back on Q2."""
-    from recall.session import advance, start_session
-
-    provider = _SequencedProvider(
-        [
-            GradeResult(verdict="incomplete_capture", rubric_points_hit=[], quality=0, feedback="Only caught a few words, will ask again", answers="current"),
-            GradeResult(verdict="partial", rubric_points_hit=["polymorphs"], quality=3, feedback="Missed: chocolate tempering detail.", answers="previous"),
-            GradeResult(verdict="partial", rubric_points_hit=["polymorphs"], quality=3, feedback="Missed: chocolate tempering detail.", answers="current"),
-        ]
-    )
-    monkeypatch.setattr("recall.grading.get_provider", lambda: provider)
-
-    with DBSession(db_engine) as db:
-        db.add(Conversation(id=1))
-        _approved_session(db)
-        _question(db, 1, text=_Q2_CHOCOLATE_TEXT, rubric=["polymorphs", "tempering"])
-        _question(db, 2, text=_Q3_RITONAVIR_TEXT, rubric=["solubility", "bioavailability"])
+        dispatch = db.exec(select(Dispatch)).first()
+        u = Utterance(id=12345, conversation_id=1, conversation_uuid="x", text="already used elsewhere", spoken_at=dispatch.alarm_at + timedelta(seconds=5))
+        db.add(u)
         db.commit()
 
-    now = BASE
-    start_session("tick", now=now)
-    _answer_open_dispatch(db_engine, bee_store, "incomplete_capture", 0, raw_text=_Q2_RESTATEMENT)
-    result = _advance_to_ready(_open_dispatch_alarm_at(db_engine))
-    assert result["event"] == "next_question_dispatched"
+        u.claimed_by_dispatch_id = 999  # simulates having already fed some other Answer
+        db.add(u)
+        db.commit()
 
-    _answer_open_dispatch(db_engine, bee_store, "partial", 3, raw_text=_Q3_RAW_TEXT_CAPTURED)
-    result = _advance_to_ready(_open_dispatch_alarm_at(db_engine))
+        status, match = _classify_window(db, dispatch, dispatch.alarm_at + timedelta(seconds=60))
+        assert match.utterances == []
+        assert status == "wait"  # no unclaimed speech, and the 4-min hard cap hasn't hit yet
 
-    assert result["event"] == "reassigned_to_previous"
-    assert result["previous_question_id"] == 1
 
+def test_grade_skipped_when_utterance_set_unchanged_since_last_grade(db_engine, bee_store, monkeypatch):
+    """Phase 5G Step 2: a dispatch is only (re)graded when its utterance
+    set has actually changed since the last grade -- calling the guard
+    again with the identical set must not call the LLM a second time."""
+    from recall.matcher import MatchResult
+    from recall.matcher import Utterance as MatcherUtterance
+    from recall.session import _grade_with_guards, _persist_answer, start_session
+
+    provider = _SequencedProvider([GradeResult(verdict="partial", rubric_points_hit=["a"], quality=3, feedback="Missed b.", answers="current")])
+    monkeypatch.setattr("recall.grading.get_provider", lambda: provider)
+
+    _seed_questions(db_engine, 1)
+    start_session("tick", now=BASE)
     with DBSession(db_engine) as db:
-        d1 = db.exec(select(Dispatch).where(Dispatch.question_id == 1)).first()
-        a1 = db.exec(select(Answer).where(Answer.dispatch_id == d1.id)).first()
-        assert a1.verdict == "partial"  # corrected -- no longer incomplete_capture
-        assert "polymorphs works" in a1.raw_text  # the real content, now on the right question
+        dispatch = db.exec(select(Dispatch)).first()
+        question = db.get(Question, dispatch.question_id)
+        db.add(Utterance(id=55001, conversation_id=1, conversation_uuid="x", text="a stable answer", spoken_at=dispatch.alarm_at + timedelta(seconds=5)))
+        db.commit()
+        match = MatchResult(
+            utterances=[MatcherUtterance(id=55001, text="a stable answer", spoken_at=dispatch.alarm_at + timedelta(seconds=5))],
+            raw_text="a stable answer",
+            trigger_found=False,
+        )
 
-        d2 = db.exec(select(Dispatch).where(Dispatch.question_id == 2)).first()
-        assert d2.status == "pending"
-        assert db.exec(select(Answer).where(Answer.dispatch_id == d2.id)).first() is None  # Ritonavir question still genuinely unanswered
+        result = _grade_with_guards(db, dispatch, question, None, match)
+        assert result is not None
+        _persist_answer(db, dispatch, result, match, dispatch.alarm_at + timedelta(seconds=20))
+
+        dispatch = db.get(Dispatch, dispatch.id)
+        assert dispatch.grade_call_count == 1
+
+        # Same dispatch, same utterance set -- must be skipped, not re-called.
+        result_again = _grade_with_guards(db, dispatch, question, None, match)
+        assert result_again is None
+        dispatch = db.get(Dispatch, dispatch.id)
+        assert dispatch.grade_call_count == 1  # unchanged -- no second LLM call
+        assert len(provider.calls) == 1
 
 
-def test_answer_not_reassigned_when_grader_says_current(db_engine, bee_store, monkeypatch):
-    """Sanity check: when the grader says the speech answers the current
-    question (the normal case), no reassignment machinery fires at all."""
-    from recall.session import advance, start_session
+def test_grade_call_guard_caps_at_three_then_needs_review(db_engine, bee_store, monkeypatch):
+    """Phase 5G Step 2: max 3 grader calls per dispatch -- on the 4th, stop
+    and mark the dispatch needs_review instead of calling the LLM again
+    (the circuit breaker for any future bug of Incident 3's shape)."""
+    from recall.matcher import MatchResult
+    from recall.matcher import Utterance as MatcherUtterance
+    from recall.session import _grade_with_guards, start_session
 
     provider = _SequencedProvider(
-        [GradeResult(verdict="correct", rubric_points_hit=["a"], quality=5, feedback="Nice.", answers="current")]
+        [
+            GradeResult(verdict="partial", rubric_points_hit=[], quality=3, feedback="1", answers="current"),
+            GradeResult(verdict="partial", rubric_points_hit=[], quality=3, feedback="2", answers="current"),
+            GradeResult(verdict="partial", rubric_points_hit=[], quality=3, feedback="3", answers="current"),
+        ]
     )
     monkeypatch.setattr("recall.grading.get_provider", lambda: provider)
 
-    _seed_questions(db_engine, 2)
-    now = BASE
-    start_session("tick", now=now)
-    _answer_open_dispatch(db_engine, bee_store, "correct", 5, raw_text="a perfectly normal on-topic answer with plenty of extra words here")
-    result = _advance_to_ready(_open_dispatch_alarm_at(db_engine))
-
-    assert result["event"] == "next_question_dispatched"
+    _seed_questions(db_engine, 1)
+    start_session("tick", now=BASE)
     with DBSession(db_engine) as db:
-        d1 = db.exec(select(Dispatch).where(Dispatch.question_id == 1)).first()
-        assert d1.status == "answered"
-        a1 = db.exec(select(Answer).where(Answer.dispatch_id == d1.id)).first()
-        assert a1.verdict == "correct"
+        dispatch = db.exec(select(Dispatch)).first()
+        question = db.get(Question, dispatch.question_id)
+        dispatch_id, question_id, alarm_at = dispatch.id, question.id, dispatch.alarm_at
+
+    # 3 calls, each with a different (never-persisted) utterance set, so
+    # the "unchanged since last grade" skip never fires -- isolates the
+    # call-count cap itself.
+    for i in range(3):
+        uid = 70000 + i
+        with DBSession(db_engine) as db:
+            db.add(Utterance(id=uid, conversation_id=1, conversation_uuid="x", text=f"changing answer {i}", spoken_at=alarm_at + timedelta(seconds=5)))
+            db.commit()
+            dispatch = db.get(Dispatch, dispatch_id)
+            question = db.get(Question, question_id)
+            match = MatchResult(
+                utterances=[MatcherUtterance(id=uid, text=f"changing answer {i}", spoken_at=alarm_at + timedelta(seconds=5))],
+                raw_text=f"changing answer {i}",
+                trigger_found=False,
+            )
+            result = _grade_with_guards(db, dispatch, question, None, match)
+            assert result is not None
+
+    with DBSession(db_engine) as db:
+        dispatch = db.get(Dispatch, dispatch_id)
+        assert dispatch.grade_call_count == 3
+
+        uid = 70099
+        db.add(Utterance(id=uid, conversation_id=1, conversation_uuid="x", text="one too many", spoken_at=alarm_at + timedelta(seconds=5)))
+        db.commit()
+        question = db.get(Question, question_id)
+        match = MatchResult(
+            utterances=[MatcherUtterance(id=uid, text="one too many", spoken_at=alarm_at + timedelta(seconds=5))],
+            raw_text="one too many",
+            trigger_found=False,
+        )
+        result = _grade_with_guards(db, dispatch, question, None, match)
+        assert result is None
+
+        dispatch = db.get(Dispatch, dispatch_id)
+        assert dispatch.status == "needs_review"
+    assert len(provider.results) == 0  # exactly 3 LLM calls made, not 4

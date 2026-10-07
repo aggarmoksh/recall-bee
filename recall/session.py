@@ -5,8 +5,10 @@ and runs due questions back-to-back: question todo -> answer window ->
 grade -> delete question todo -> feedback todo -> ~10s pause -> next
 question. Ends when the daily quota is hit, nothing is left due, or one
 no_answer ends it early (no penalty -- the question stays due for later).
-Only one SessionRun is ever `status == "active"` at a time. All state
-lives in SessionRun + Dispatch rows, so a daemon restart resumes a
+Only one SessionRun is ever `status == "active"` at a time, and at most
+one Dispatch is ever open at a time -- the next question is sent only
+after the current one is graded (Phase 5G, AGENT.md 2026-10-07). All
+state lives in SessionRun + Dispatch rows, so a daemon restart resumes a
 mid-session correctly instead of losing it.
 
 Copy rule (AGENT.md, 2026-10-01): Bee rewrites todo text into its own
@@ -20,6 +22,7 @@ verdict == "correct" only, since partial/incorrect answers are still real
 engagement and count toward the daily goal and the report's "X out of Y".
 """
 
+import logging
 import time
 from datetime import UTC, datetime, timedelta
 
@@ -31,34 +34,46 @@ from recall.config import settings
 from recall.db import Answer, Dispatch, FeedbackTodo, Question, ReviewState
 from recall.db import Session as SessionModel
 from recall.db import SessionRun, Utterance, get_session
-from recall.grading import grade_and_persist, grade_match
+from recall.grading import grade_match
 from recall.llm.base import GradeResult
 from recall.matcher import MatchResult
 from recall.matcher import Utterance as MatcherUtterance
-from recall.matcher import fuzzy_contains_trigger, match_answer_window
-from recall.scoring import current_streak_days, replay_review_state, session_run_breakdown
+from recall.matcher import match_answer_window
+from recall.scoring import current_streak_days, session_run_breakdown
 from recall.srs import sm2
+
+logger = logging.getLogger("recall.session")
 
 POST_FEEDBACK_PAUSE_S = 10
 
-# Phase 5E Step 3 session pacing (AGENT.md, 2026-10-05): if NO speech at all
-# arrives within 2 min, the dispatch is deferred (not graded) rather than
-# forced to no_answer -- Phase 5D measured real answers sometimes taking
-# several minutes to become transcribable, so an immediate no_answer here
-# would risk discarding a genuine answer, not just a real miss.
-NO_SPEECH_DEFER_S = 120.0
-PENDING_GRADE_FALLBACK_WINDOW_S = 600.0  # used only when no later dispatch exists yet to bound the window
+# Phase 5G (AGENT.md, 2026-10-07, replaces the Phase 5E/5F "defer at 2 min
+# then live-reassign" model after it was found live to loop forever --
+# recall/FRICTION_LOG.md, 2-day check Incident 3): no unclaimed speech with
+# spoken_at >= alarm_at by alarm_at + 4 min means no_answer, no SM-2
+# change, and the session ends cleanly (the rest of the due questions stay
+# due). The 4-min figure (not 2) comes from Phase 5D: real answers have
+# been measured taking several minutes to become transcribable.
+NO_ANSWER_TIMEOUT_S = 240.0
 
 # Phase 5F answer-done rule (AGENT.md, revised 2026-10-05 after a Phase 5E
-# live test found a cross-question content bleed): an answer with speech in
-# it is "done" only once BOTH no new utterance has ARRIVED for
-# ANSWER_QUIET_S AND the last utterance's own spoken_at is at least
-# MIN_SPOKEN_AGE_S old. The arrival-only version of this rule let a
+# live test found a cross-question content bleed), UNCHANGED by Phase 5G:
+# an answer with speech in it is "done" only once BOTH no new utterance has
+# ARRIVED for ANSWER_QUIET_S AND the last utterance's own spoken_at is at
+# least MIN_SPOKEN_AGE_S old. The arrival-only version of this rule let a
 # restated-question-then-pause answer get graded on just the restatement,
 # before the real explanation (delayed by realtime-transcript lag, Phase
 # 5D: 25-39s+) had even arrived.
 ANSWER_QUIET_S = 15.0
 MIN_SPOKEN_AGE_S = 40.0
+
+# Phase 5G Step 2 (AGENT.md, 2026-10-07): an utterance attaches to at most
+# ONE Answer, ever (Utterance.claimed_by_dispatch_id), so claimed content
+# can never be re-matched into a later window -- the structural bug behind
+# Incident 3. A dispatch is only ever (re)graded while its utterance set
+# has actually changed since its last grade; a hard cap on how many times
+# that can happen stops any future bug of this shape from burning the LLM
+# budget in a loop instead of just failing loudly.
+MAX_GRADE_CALLS_PER_DISPATCH = 3
 
 # Phase 5F hint prefix (AGENT.md, revised 2026-10-05): always the short
 # prefix; no prefix at all if it still doesn't fit TODO_TEXT_MAX_CHARS
@@ -202,20 +217,50 @@ def _end_session(db, client: BeeClient, session_run: SessionRun, status: str, no
     db.commit()
 
 
-def _persist_answer(db, dispatch: Dispatch, result: GradeResult, match: MatchResult, now: datetime) -> Answer:
-    answer = Answer(
-        dispatch_id=dispatch.id,
-        utterance_ids=[u.id for u in match.utterances],
-        raw_text=match.raw_text,
-        verdict=result.verdict,
-        rubric_points_hit=result.rubric_points_hit,
-        quality=result.quality,
-        feedback=result.feedback,
-        matched_at=now,
-    )
-    db.add(answer)
+def _claim_utterances(db, dispatch: Dispatch, match: MatchResult) -> None:
+    """Phase 5G Step 2: once an utterance is part of a graded Answer, it
+    can never be matched into any other window again -- the structural fix
+    for Incident 3 (a dispatch kept re-matching the same already-used
+    utterances forever). Only claims rows not already claimed by this same
+    dispatch (idempotent on a regrade of the same dispatch)."""
+    for u in match.utterances:
+        row = db.get(Utterance, u.id)
+        if row is not None and row.claimed_by_dispatch_id is None:
+            row.claimed_by_dispatch_id = dispatch.id
+            db.add(row)
     db.commit()
-    db.refresh(answer)
+
+
+def _persist_answer(db, dispatch: Dispatch, result: GradeResult, match: MatchResult, now: datetime) -> Answer:
+    existing = db.exec(select(Answer).where(Answer.dispatch_id == dispatch.id)).first()
+    if existing is not None:
+        existing.utterance_ids = [u.id for u in match.utterances]
+        existing.raw_text = match.raw_text
+        existing.verdict = result.verdict
+        existing.rubric_points_hit = result.rubric_points_hit
+        existing.quality = result.quality
+        existing.feedback = result.feedback
+        existing.matched_at = now
+        db.add(existing)
+        db.commit()
+        db.refresh(existing)
+        answer = existing
+    else:
+        answer = Answer(
+            dispatch_id=dispatch.id,
+            utterance_ids=[u.id for u in match.utterances],
+            raw_text=match.raw_text,
+            verdict=result.verdict,
+            rubric_points_hit=result.rubric_points_hit,
+            quality=result.quality,
+            feedback=result.feedback,
+            matched_at=now,
+        )
+        db.add(answer)
+        db.commit()
+        db.refresh(answer)
+
+    _claim_utterances(db, dispatch, match)
     return answer
 
 
@@ -248,110 +293,68 @@ def _previous_dispatch(db, session_run: SessionRun, current: Dispatch) -> Dispat
     return dispatches[0] if dispatches else None
 
 
-def _merged_match(db, previous_answer: Answer | None, current_match: MatchResult) -> MatchResult:
-    """Combines whatever the previous dispatch's existing answer already
-    has (if any) with the current match's utterances, in chronological
-    order -- used when a late-arriving answer to the previous question got
-    captured in the current question's window instead (Phase 5F)."""
-    combined: list[MatcherUtterance] = []
-    if previous_answer is not None:
-        for uid in previous_answer.utterance_ids:
-            u = db.get(Utterance, uid)
-            if u is not None:
-                combined.append(MatcherUtterance(id=u.id, text=u.text, spoken_at=u.spoken_at))
-    combined.extend(current_match.utterances)
-    combined.sort(key=lambda u: u.spoken_at)
-    raw_text = " ".join(u.text for u in combined)
-    trigger_found = any(fuzzy_contains_trigger(u.text) for u in combined)
-    return MatchResult(utterances=combined, raw_text=raw_text, trigger_found=trigger_found)
+def _grade_with_guards(db, dispatch: Dispatch, question: Question, previous_question: Question | None, match: MatchResult) -> GradeResult | None:
+    """Phase 5G Step 2: calls the grader only when this dispatch's
+    utterance set has actually changed since its last grade, and never
+    more than MAX_GRADE_CALLS_PER_DISPATCH times -- on the (would-be) 4th
+    call, stops, marks the dispatch `needs_review`, and logs it instead of
+    calling the LLM again. Returns None when the call was skipped for
+    either reason. `previous_question` is passed through to grade_match
+    purely so the grader's current|previous|neither field (logged as a
+    diagnostic only -- it never moves data in Phase 5G) has something to
+    compare against; the result is always persisted against THIS dispatch
+    regardless of what it says."""
+    existing = db.exec(select(Answer).where(Answer.dispatch_id == dispatch.id)).first()
+    new_ids = sorted(u.id for u in match.utterances)
+    if existing is not None and sorted(existing.utterance_ids) == new_ids:
+        return None  # nothing changed since the last grade -- skip
 
-
-def _reassign_to_previous(
-    db, client: BeeClient, previous: Dispatch, previous_question: Question, current_match: MatchResult, now: datetime
-) -> Answer:
-    """Phase 5F: the grader decided speech captured in the CURRENT
-    dispatch's window actually answers the PREVIOUS one instead. Merges it
-    with whatever that dispatch's answer already has (none, if it was
-    still 'processing') and regrades once, replacing -- not duplicating --
-    its Answer row. Then replays SM-2 for that question from scratch
-    (recall.scoring.replay_review_state), since the prior grade may
-    already have fed SM-2 once under a now-corrected verdict, and a single
-    incremental 'undo' isn't reliable (same reasoning as the Phase 5C
-    no_answer recompute). No new feedback todo -- the correction shows up
-    on the dashboard only, consistent with deferred-grade corrections."""
-    old_answer = db.exec(select(Answer).where(Answer.dispatch_id == previous.id)).first()
-    old_verdict = old_answer.verdict if old_answer is not None else None
-    merged = _merged_match(db, old_answer, current_match)
-
-    result = grade_match(previous_question, merged)  # plain regrade -- no further previous-of-previous lookback
-
-    if old_answer is not None:
-        old_answer.utterance_ids = [u.id for u in merged.utterances]
-        old_answer.raw_text = merged.raw_text
-        old_answer.verdict = result.verdict
-        old_answer.rubric_points_hit = result.rubric_points_hit
-        old_answer.quality = result.quality
-        old_answer.feedback = result.feedback
-        old_answer.matched_at = now
-        db.add(old_answer)
-        answer = old_answer
-    else:
-        answer = Answer(
-            dispatch_id=previous.id,
-            utterance_ids=[u.id for u in merged.utterances],
-            raw_text=merged.raw_text,
-            verdict=result.verdict,
-            rubric_points_hit=result.rubric_points_hit,
-            quality=result.quality,
-            feedback=result.feedback,
-            matched_at=now,
+    if dispatch.grade_call_count >= MAX_GRADE_CALLS_PER_DISPATCH:
+        dispatch.status = "needs_review"
+        db.add(dispatch)
+        db.commit()
+        logger.warning(
+            "dispatch %d (question %d) hit %d grade calls without stabilizing -- marking needs_review, not grading again",
+            dispatch.id, question.id, MAX_GRADE_CALLS_PER_DISPATCH,
         )
-        db.add(answer)
+        return None
 
-    previous.status = "answered"
-    db.add(previous)
+    dispatch.grade_call_count += 1
+    db.add(dispatch)
     db.commit()
-    db.refresh(answer)
 
-    replay_review_state(db, previous_question.id, now)
-
-    session_run = db.get(SessionRun, previous.session_run_id)
-    if session_run is not None:
-        old_counted = old_verdict is not None and old_verdict != "no_answer"
-        new_counted = answer.verdict != "no_answer"
-        if new_counted and not old_counted:
-            session_run.questions_answered += 1
-            db.add(session_run)
-            db.commit()
-        elif old_counted and not new_counted:
-            session_run.questions_answered -= 1
-            db.add(session_run)
-            db.commit()
-
-    return answer
+    result = grade_match(question, match, previous_question=previous_question)
+    if result.answers != "current":
+        logger.info(
+            "dispatch %d (question %d): grader diagnostic answers=%s (logged only, never moves data)",
+            dispatch.id, question.id, result.answers,
+        )
+    return result
 
 
-def _grade_dispatch(db, client: BeeClient, dispatch: Dispatch, question: Question, now: datetime, match: MatchResult) -> dict:
-    """Grades the current dispatch -- UNLESS the grader decides this
-    speech actually answers the PREVIOUS question (a late-arriving answer
-    whose own window closed before it finished transcribing, Phase 5F), in
-    which case it's reassigned there instead and the current dispatch is
-    left exactly as if nothing had arrived for it yet (no Answer written,
-    still 'pending'). Returns {'outcome': 'graded', 'answer': Answer} or
-    {'outcome': 'reassigned', 'previous_question_id': int}."""
+def _grade_dispatch(db, client: BeeClient, dispatch: Dispatch, question: Question, now: datetime, match: MatchResult) -> Answer | None:
     session_run = db.get(SessionRun, dispatch.session_run_id)
     previous = _previous_dispatch(db, session_run, dispatch)
     previous_question = db.get(Question, previous.question_id) if previous is not None else None
 
-    result = grade_match(question, match, previous_question=previous_question)
-
-    if result.answers == "previous" and previous is not None:
-        _reassign_to_previous(db, client, previous, previous_question, match, now)
-        return {"outcome": "reassigned", "previous_question_id": previous_question.id}
+    result = _grade_with_guards(db, dispatch, question, previous_question, match)
+    if result is None:
+        return None
 
     answer = _persist_answer(db, dispatch, result, match, now)
     _finish_grading(db, client, dispatch, question, answer, now)
-    return {"outcome": "graded", "answer": answer}
+    return answer
+
+
+def _grade_no_answer(db, client: BeeClient, dispatch: Dispatch, question: Question, now: datetime) -> Answer:
+    """No speech at all by alarm_at + NO_ANSWER_TIMEOUT_S: graded directly,
+    no LLM call and no grade-call-count guard involved (grade_match()
+    already short-circuits an empty window the same way)."""
+    empty_match = MatchResult(utterances=[], raw_text="", trigger_found=False)
+    result = grade_match(question, empty_match)
+    answer = _persist_answer(db, dispatch, result, empty_match, now)
+    _finish_grading(db, client, dispatch, question, answer, now)
+    return answer
 
 
 def start_session(trigger: str, now: datetime | None = None) -> SessionRun | None:
@@ -384,22 +387,30 @@ def start_session(trigger: str, now: datetime | None = None) -> SessionRun | Non
 
 def _classify_window(db, dispatch: Dispatch, now: datetime) -> tuple[str, MatchResult]:
     """Classifies an open dispatch's answer window as 'wait' | 'ready' |
-    'defer' (AGENT.md answer-done rule, revised Phase 5F): ready only once
+    'no_answer' (AGENT.md answer-done rule, Phase 5G): ready only once
     BOTH no new utterance has ARRIVED for ANSWER_QUIET_S AND the last
     utterance's own spoken_at is at least MIN_SPOKEN_AGE_S old (or the
-    2-min hard cap force-closes a still-ongoing answer regardless); defer
-    (no grading yet) if no speech at all arrives by alarm_at + 2 min.
+    4-min hard cap force-closes a still-ongoing answer regardless);
+    no_answer if no speech at all arrives by alarm_at + 4 min.
 
-    Arrival is tracked via Dispatch.last_seen_utterance_id/_at rather than
-    in-memory, so it survives a daemon restart. tail_close_s is set to the
-    hard cap itself (effectively disabling the matcher's own internal
-    pruning) -- within the 2-min window everything accumulates regardless
-    of internal gaps; this function's own arrival/spoken-age logic decides
-    readiness, not the matcher's."""
-    rows = db.exec(select(Utterance).where(Utterance.spoken_at >= dispatch.alarm_at).order_by(Utterance.spoken_at)).all()
+    Window queries exclude already-claimed utterances (Phase 5G Step 2) --
+    once an utterance has fed some Answer, it can never be matched into
+    another window. Arrival is tracked via
+    Dispatch.last_seen_utterance_id/_at rather than in-memory, so it
+    survives a daemon restart. tail_close_s is set to the hard cap itself
+    (effectively disabling the matcher's own internal pruning) -- within
+    the window everything accumulates regardless of internal gaps; this
+    function's own arrival/spoken-age logic decides readiness, not the
+    matcher's."""
+    rows = db.exec(
+        select(Utterance)
+        .where(Utterance.spoken_at >= dispatch.alarm_at)
+        .where(Utterance.claimed_by_dispatch_id.is_(None))
+        .order_by(Utterance.spoken_at)
+    ).all()
     utterances = [MatcherUtterance(id=r.id, text=r.text, spoken_at=r.spoken_at) for r in rows]
-    match = match_answer_window(utterances, alarm_at=dispatch.alarm_at, tail_close_s=NO_SPEECH_DEFER_S, hard_cap_s=NO_SPEECH_DEFER_S)
-    hard_cap_at = dispatch.alarm_at + timedelta(seconds=NO_SPEECH_DEFER_S)
+    match = match_answer_window(utterances, alarm_at=dispatch.alarm_at, tail_close_s=NO_ANSWER_TIMEOUT_S, hard_cap_s=NO_ANSWER_TIMEOUT_S)
+    hard_cap_at = dispatch.alarm_at + timedelta(seconds=NO_ANSWER_TIMEOUT_S)
 
     if match.utterances:
         last = match.utterances[-1]
@@ -414,32 +425,15 @@ def _classify_window(db, dispatch: Dispatch, now: datetime) -> tuple[str, MatchR
             return "ready", match
         return "wait", match
     if now >= hard_cap_at:
-        return "defer", match
+        return "no_answer", match
     return "wait", match
-
-
-def _defer_dispatch(db, client: BeeClient, dispatch: Dispatch) -> None:
-    """No speech by alarm_at + 2 min: move on without grading. Graded
-    later in the background once the final transcript becomes available
-    (grade_pending_dispatches) -- never blocks the session."""
-    dispatch.status = "processing"
-    db.add(dispatch)
-    db.commit()
-    client.delete_todo(dispatch.bee_todo_id)
-
-
-def _last_two_dispatches_both_deferred(db, session_run: SessionRun) -> bool:
-    dispatches = db.exec(select(Dispatch).where(Dispatch.session_run_id == session_run.id).order_by(Dispatch.id)).all()
-    if len(dispatches) < 2:
-        return False
-    return dispatches[-1].status == "processing" and dispatches[-2].status == "processing"
 
 
 def advance(now: datetime | None = None) -> dict | None:
     """Called on every daemon poll tick. Classifies the active session's
-    open dispatch as wait/ready/defer and acts accordingly, then either
-    ends the session or dispatches the next due question. Returns a dict
-    describing what happened, or None if there's nothing to do."""
+    open dispatch as wait/ready/no_answer and acts accordingly, then
+    either ends the session or dispatches the next due question. Returns a
+    dict describing what happened, or None if there's nothing to do."""
     now = now or datetime.now(UTC)
     db = get_session()
     try:
@@ -457,26 +451,20 @@ def advance(now: datetime | None = None) -> dict | None:
 
         question = db.get(Question, dispatch.question_id)
         with BeeProxy(port=settings.bee_proxy_port) as proxy, BeeClient(proxy.base_url) as client:
-            if status == "defer":
-                _defer_dispatch(db, client, dispatch)
+            if status == "no_answer":
+                _grade_no_answer(db, client, dispatch, question, now)
                 db.refresh(session_run)
-                if _last_two_dispatches_both_deferred(db, session_run):
-                    _end_session(db, client, session_run, "paused", now)
-                    return {"event": "session_paused_two_deferred", "question_id": question.id}
-            else:
-                grade_result = _grade_dispatch(db, client, dispatch, question, now, match)
-                if grade_result["outcome"] == "reassigned":
-                    # Current dispatch stays open (no Answer written, still
-                    # 'pending') -- never dispatch the next question until
-                    # it's graded or pending (AGENT.md answer-done rule).
-                    db.refresh(session_run)
-                    return {
-                        "event": "reassigned_to_previous",
-                        "question_id": question.id,
-                        "previous_question_id": grade_result["previous_question_id"],
-                    }
-                time.sleep(POST_FEEDBACK_PAUSE_S)
-                db.refresh(session_run)
+                _end_session(db, client, session_run, "ended_no_answer", now)
+                return {"event": "session_ended_no_answer", "question_id": question.id}
+
+            answer = _grade_dispatch(db, client, dispatch, question, now, match)
+            if answer is None:
+                # Grade skipped (unchanged utterance set, or the grade-call
+                # cap was hit and the dispatch was marked needs_review) --
+                # nothing to act on this tick; try again later.
+                return None
+            time.sleep(POST_FEEDBACK_PAUSE_S)
+            db.refresh(session_run)
 
             if session_run.questions_asked >= settings.daily_quota:
                 _end_session(db, client, session_run, "completed", now)
@@ -492,96 +480,17 @@ def advance(now: datetime | None = None) -> dict | None:
 
             next_question = remaining[0]
             _dispatch_question(db, client, session_run, next_question, now)
-            event = "next_question_dispatched" if status != "defer" else "deferred_next_question_dispatched"
-            return {"event": event, "question_id": next_question.id}
+            return {"event": "next_question_dispatched", "question_id": next_question.id}
     finally:
         db.close()
 
 
 def recover(now: datetime | None = None) -> dict | None:
-    """Phase 5C Step 0.3, updated Phase 5E: wake/reconnect recovery. If
-    there's an active session with an open dispatch whose answer window
-    has already passed, defer it (not force no_answer) and end the
-    session (status 'paused', no penalty) -- a sleep/wake gap can be
-    minutes long, and Phase 5D measured real answers sometimes taking
-    several minutes to become transcribable, so forcing no_answer here
-    would risk discarding a genuine answer the final transcript just
-    hasn't caught up with yet. Deferred means grade_pending_dispatches
-    picks it up later, same as any other deferred dispatch."""
-    now = now or datetime.now(UTC)
-    db = get_session()
-    try:
-        session_run = has_active_session(db)
-        if session_run is None:
-            return None
-
-        dispatch = open_dispatch_for(db, session_run.id)
-        if dispatch is None:
-            return None
-
-        hard_cap_at = dispatch.alarm_at + timedelta(seconds=NO_SPEECH_DEFER_S)
-        if now < hard_cap_at:
-            return None  # window hasn't even passed yet -- let advance() handle it normally
-
-        question = db.get(Question, dispatch.question_id)
-        with BeeProxy(port=settings.bee_proxy_port) as proxy, BeeClient(proxy.base_url) as client:
-            _defer_dispatch(db, client, dispatch)
-            _end_session(db, client, session_run, "paused", now)
-        return {"event": "recovered_stale_session", "question_id": question.id}
-    finally:
-        db.close()
-
-
-def _next_alarm_after(db, alarm_at: datetime) -> datetime | None:
-    rows = db.exec(select(Dispatch.alarm_at).where(Dispatch.alarm_at > alarm_at).order_by(Dispatch.alarm_at)).all()
-    return rows[0] if rows else None
-
-
-def grade_pending_dispatches(now: datetime | None = None) -> list[dict]:
-    """Phase 5E Step 3: grades dispatches deferred by _defer_dispatch once
-    the final (non-realtime) transcript for their conversation window
-    becomes available. Matched by spoken_at in [this alarm_at, next
-    alarm_at) -- the next dispatch anywhere marks the boundary past which
-    speech belongs to a different question, not this one; if none exists
-    yet, falls back to a generous fixed window. Never blocks session
-    advancement -- called periodically from the slow loop. Posts no
-    feedback todo: by the time this runs the session has already moved on
-    or ended, so the grade shows up on the dashboard only."""
-    now = now or datetime.now(UTC)
-    db = get_session()
-    results: list[dict] = []
-    try:
-        pending = db.exec(select(Dispatch).where(Dispatch.status == "processing")).all()
-        for dispatch in pending:
-            next_alarm = _next_alarm_after(db, dispatch.alarm_at)
-            window_end = next_alarm or (dispatch.alarm_at + timedelta(seconds=PENDING_GRADE_FALLBACK_WINDOW_S))
-            rows = db.exec(
-                select(Utterance)
-                .where(Utterance.spoken_at >= dispatch.alarm_at)
-                .where(Utterance.spoken_at < window_end)
-                .order_by(Utterance.spoken_at)
-            ).all()
-            if not rows:
-                continue  # still nothing yet -- try again on the next pass
-
-            question = db.get(Question, dispatch.question_id)
-            utterances = [MatcherUtterance(id=r.id, text=r.text, spoken_at=r.spoken_at) for r in rows]
-            span_s = max((window_end - dispatch.alarm_at).total_seconds(), 1.0)
-            match = match_answer_window(utterances, alarm_at=dispatch.alarm_at, tail_close_s=span_s, hard_cap_s=span_s)
-            if not match.utterances:
-                continue
-
-            answer = grade_and_persist(dispatch, question, match)
-            dispatch.status = "answered"
-            db.add(dispatch)
-            _apply_scheduling(db, question, answer, now)
-
-            session_run = db.get(SessionRun, dispatch.session_run_id)
-            if session_run is not None and answer.verdict != "no_answer":
-                session_run.questions_answered += 1
-                db.add(session_run)
-            db.commit()
-            results.append({"dispatch_id": dispatch.id, "question_id": question.id, "verdict": answer.verdict})
-    finally:
-        db.close()
-    return results
+    """Phase 5G: wake/reconnect recovery is just a normal advance() call --
+    _classify_window is driven entirely by the explicit `now` passed in,
+    not by how continuously it's been polled, so there's nothing special
+    left to do here beyond giving the open dispatch a chance to resolve
+    immediately on wake rather than waiting for the next regular fast
+    tick. Superseded the old Phase 5E behavior of forcing a defer+pause on
+    a stale dispatch -- that whole state no longer exists."""
+    return advance(now=now)

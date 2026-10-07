@@ -29,24 +29,27 @@ SOLID_QUALITY_THRESHOLD = 4  # AGENT.md Report wording (Phase 5F): "solid" means
 
 
 def session_run_breakdown(db, session_run_id: int) -> dict:
-    """Answered/solid/needs-another-look/processing counts for one
+    """Answered/solid/needs-another-look/needs_review counts for one
     SessionRun's dispatches. Shared by the session-end report todo
     (recall.session._end_session) and the dashboard's Today report card
-    (recall.api) so the two can never disagree."""
+    (recall.api) so the two can never disagree. needs_review (Phase 5G)
+    replaces the old "processing" (deferred) bucket -- a dispatch the
+    grade-call-count guard stopped grading, excluded from answered/solid
+    the same way a deferred dispatch used to be."""
     dispatches = db.exec(select(Dispatch).where(Dispatch.session_run_id == session_run_id)).all()
     answered = 0
     solid = 0
-    processing = 0
+    needs_review = 0
     for d in dispatches:
-        if d.status == "processing":
-            processing += 1
+        if d.status == "needs_review":
+            needs_review += 1
             continue
         a = db.exec(select(Answer).where(Answer.dispatch_id == d.id)).first()
         if a is not None and a.verdict != "no_answer":
             answered += 1
             if a.quality is not None and a.quality >= SOLID_QUALITY_THRESHOLD:
                 solid += 1
-    return {"answered": answered, "solid": solid, "needs_another_look": answered - solid, "processing": processing}
+    return {"answered": answered, "solid": solid, "needs_another_look": answered - solid, "needs_review": needs_review}
 
 
 def _day_reset_hour_minute() -> tuple[int, int]:

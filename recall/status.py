@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 from recall.config import settings
 from recall.db import create_db_and_tables, get_session
+from recall.heartbeat import last_tick_at
 from recall.llm import calls_used_today
 from recall.questions import list_pending
 from recall.scoring import answered_today_count, current_streak_days, daily_goal_met
@@ -34,6 +35,8 @@ def get_status() -> dict:
         db.close()
 
     pending_sessions = list_pending()
+    last_tick = last_tick_at()
+    last_tick_ago_s = (now - last_tick).total_seconds() if last_tick is not None else None
 
     return {
         "daily_quota": settings.daily_quota,
@@ -45,6 +48,7 @@ def get_status() -> dict:
         "due_count": due_count,
         "llm_calls_used_today": calls_used_today(),
         "pending_session_ids": [s.id for s in pending_sessions],
+        "last_tick_ago_s": last_tick_ago_s,
     }
 
 
@@ -59,6 +63,10 @@ def main() -> None:
     print(f"Session: {status['session_state']}{question_suffix}")
     print(f"Due questions: {status['due_count']}")
     print(f"LLM calls used today: {status['llm_calls_used_today']}")
+    if status["last_tick_ago_s"] is None:
+        print("daemon last tick: never")
+    else:
+        print(f"daemon last tick: {status['last_tick_ago_s']:.0f}s ago")
     if status["pending_session_ids"]:
         print(f"Sessions pending approval: {status['pending_session_ids']}")
     else:

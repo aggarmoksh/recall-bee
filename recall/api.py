@@ -25,7 +25,7 @@ from sqlmodel import create_engine, select
 from recall.bee.client import BeeClient
 from recall.bee.process import BeeProxy
 from recall.config import settings
-from recall.db import DB_PATH, Answer, Dispatch, Question, SessionRun
+from recall.db import DB_PATH, Answer, Dispatch, Heartbeat, Question, SessionRun
 from recall.db import Session as SessionModel
 from recall.matcher import DEFAULT_HARD_CAP_S
 from recall.overrides import load_excluded_sessions
@@ -37,6 +37,12 @@ _readonly_engine = create_engine(READONLY_DB_URI)
 
 RUBRIC_FUZZY_THRESHOLD = 0.6
 GRADED_VERDICTS_FOR_MASTERY_EXCLUDE = {"code_truncated", "no_answer"}  # tooling tag + a miss, not a real grade
+
+# Phase 5G Step 4 (AGENT.md, 2026-10-07): the fast loop ticks every ~10s
+# (FAST_LOOP_INTERVAL_S, recall.run) -- 3 min of silence is well past any
+# normal single-tick delay and means the daemon process is gone or wedged
+# (2-day check Incidents 1-2, FRICTION_LOG.md), not just briefly busy.
+HEARTBEAT_STALE_AFTER_S = 180
 
 
 def _ro_session() -> DBSession:
@@ -69,9 +75,9 @@ def health() -> dict:
 
 def _active_session_payload(db, run: SessionRun) -> dict | None:
     # status == "pending" specifically, matching recall.session.open_dispatch_for
-    # -- a deferred dispatch (status "processing") also has no Answer yet
-    # but is NOT the currently-open question, and would otherwise show a
-    # stale question as "current" on the dashboard.
+    # -- a needs_review dispatch (Phase 5G) also has no Answer yet but is
+    # NOT the currently-open question, and would otherwise show a stale
+    # question as "current" on the dashboard.
     dispatches = db.exec(select(Dispatch).where(Dispatch.session_run_id == run.id).where(Dispatch.status == "pending")).all()
     open_dispatch = None
     for d in dispatches:
@@ -124,11 +130,12 @@ def get_today() -> dict:
             )
 
         last_completed = db.exec(
-            # "ended_no_answer" kept for historical pre-5E rows; "paused" is
-            # the current v4 status for a session that ended early on two
-            # consecutive deferred (still-processing) dispatches or a
-            # sleep/wake recovery (Phase 5E Step 3).
-            select(SessionRun).where(SessionRun.status.in_(["completed", "ended_no_answer", "paused"])).order_by(SessionRun.ended_at.desc())
+            # "ended_no_answer" (Phase 5G, 2026-10-07): a session that ended
+            # early because its open dispatch hit the 4-min no_answer
+            # timeout -- no penalty, the rest of the day's questions stay
+            # due. "paused" (the old two-consecutive-deferred status) no
+            # longer occurs; kept out of this list since it can't happen.
+            select(SessionRun).where(SessionRun.status.in_(["completed", "ended_no_answer"])).order_by(SessionRun.ended_at.desc())
         ).first()
         report_card = None
         if last_completed is not None and last_completed.ended_at is not None and _to_local(last_completed.ended_at).date() == _to_local(now).date():
@@ -141,9 +148,14 @@ def get_today() -> dict:
                 "questions_answered": breakdown["answered"],
                 "solid": breakdown["solid"],
                 "needs_another_look": breakdown["needs_another_look"],
-                "questions_processing": breakdown["processing"],
+                "questions_needs_review": breakdown["needs_review"],
                 "ended_at": last_completed.ended_at.isoformat(),
             }
+
+        heartbeat = db.get(Heartbeat, 1)
+        last_tick_at = heartbeat.last_tick_at if heartbeat is not None else None
+        heartbeat_age_s = (now - last_tick_at).total_seconds() if last_tick_at is not None else None
+        daemon_offline = heartbeat_age_s is None or heartbeat_age_s > HEARTBEAT_STALE_AFTER_S
 
         return {
             "daily_quota": settings.daily_quota,
@@ -153,6 +165,8 @@ def get_today() -> dict:
             "session": session_payload,
             "recent_answers": answers_payload,
             "report_card": report_card,
+            "daemon_last_tick_at": last_tick_at.isoformat() if last_tick_at is not None else None,
+            "daemon_offline": daemon_offline,
         }
     finally:
         db.close()

@@ -43,12 +43,13 @@ from recall.bee.client import BeeClient
 from recall.bee.process import BeeProxy, find_bee_processes
 from recall.config import settings
 from recall.db import Session, StartPhraseUtterance, create_db_and_tables, get_session
+from recall.heartbeat import record_tick
 from recall.ingest import consume_stream_live, poll_live_conversations, poll_once
 from recall.matcher import detects_session_start
 from recall.overrides import load_excluded_sessions
 from recall.questions import generate_for_session
 from recall.ready_todo import check_and_recreate
-from recall.session import advance, due_questions, grade_pending_dispatches, recover, start_session
+from recall.session import advance, due_questions, recover, start_session
 from recall.stings import cleanup_old_stings, maybe_send_stings, send_post_lecture_sting
 
 LOG_PATH = Path(__file__).resolve().parent.parent / "logs" / "recall-run.log"
@@ -58,6 +59,15 @@ FAST_LOOP_INTERVAL_S = 10
 SLOW_LOOP_INTERVAL_S = 60
 START_PHRASE_WINDOW_S = 15  # rolling buffer for detecting a split spoken phrase
 SLEEP_GAP_THRESHOLD_S = SLOW_LOOP_INTERVAL_S * 3  # a tick this late means the process (or OS) was suspended
+
+# Phase 5G Step 4 (AGENT.md, 2026-10-07): per-loop supervisor backoff, after
+# either 2-day-check crash (FRICTION_LOG.md) took down the whole daemon
+# process via an exception that escaped asyncio.gather() entirely -- not
+# just the one tick it happened on. Each loop below now runs under
+# _supervised(), which can never let that happen again: an exception is
+# logged and that ONE loop restarts after a capped backoff, the other
+# loops keep running untouched.
+SUPERVISOR_BACKOFF_STEPS_S = [5.0, 15.0, 60.0]
 
 logger = logging.getLogger("recall.run")
 
@@ -214,10 +224,6 @@ def slow_tick(dry_run: bool = False) -> None:
     if sting_count:
         _log_line(f"cleaned up {sting_count} sting todo(s) older than 12h")
 
-    graded = grade_pending_dispatches(now=now)
-    for g in graded:
-        _log_line(f"deferred dispatch graded: question {g['question_id']} verdict={g['verdict']}")
-
 
 def run_once(dry_run: bool = False) -> None:
     """Single-cycle entry point (`--once`): runs one slow tick plus one
@@ -226,6 +232,26 @@ def run_once(dry_run: bool = False) -> None:
     if not dry_run:
         with BeeProxy(port=settings.bee_proxy_port) as proxy, BeeClient(proxy.base_url) as client:
             fast_tick(client)
+
+
+async def _supervised(name: str, coro_fn, *args, **kwargs) -> None:
+    """Runs coro_fn(*args, **kwargs) forever. Any exception that escapes
+    it is logged and THIS loop alone restarts after a capped backoff
+    (SUPERVISOR_BACKOFF_STEPS_S) -- it never propagates out to
+    asyncio.gather() and never takes the other loops down with it (Phase
+    5G Step 4, AGENT.md 2026-10-07)."""
+    backoff_index = 0
+    while True:
+        try:
+            await coro_fn(*args, **kwargs)
+            _log_line(f"{name} loop exited normally (unexpected for an infinite loop) -- restarting")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            _log_line(f"{name} loop FAILED: {e!r} -- restarting")
+        backoff = SUPERVISOR_BACKOFF_STEPS_S[min(backoff_index, len(SUPERVISOR_BACKOFF_STEPS_S) - 1)]
+        backoff_index += 1
+        await asyncio.sleep(backoff)
 
 
 async def run_daemon(dry_run: bool = False) -> None:
@@ -251,6 +277,7 @@ async def run_daemon(dry_run: bool = False) -> None:
                         await asyncio.get_running_loop().run_in_executor(None, fast_tick, client)
                     except Exception as e:
                         _log_line(f"fast_tick FAILED: {e}")
+                record_tick(now=datetime.now(UTC))
                 await asyncio.sleep(FAST_LOOP_INTERVAL_S)
 
     async def slow_loop():
@@ -262,10 +289,7 @@ async def run_daemon(dry_run: bool = False) -> None:
             await asyncio.sleep(SLOW_LOOP_INTERVAL_S)
 
     async def live_poll_loop(client: BeeClient):
-        try:
-            await poll_live_conversations(client, on_new_utterance=_on_new_utterance)
-        except Exception as e:
-            _log_line(f"live_poll_loop FAILED: {e}")
+        await poll_live_conversations(client, on_new_utterance=_on_new_utterance)
 
     # consume_stream_live() (recall.ingest) already tree-kills its own bee
     # stream subprocess in a finally block, including under cancellation.
@@ -275,10 +299,10 @@ async def run_daemon(dry_run: bool = False) -> None:
     # fast_tick/slow_tick do for their own occasional calls.
     with BeeProxy(port=settings.bee_proxy_port) as live_proxy, BeeClient(live_proxy.base_url) as live_client:
         await asyncio.gather(
-            consume_stream_live(on_new_utterance=_on_new_utterance, client=live_client),
-            fast_loop(),
-            slow_loop(),
-            live_poll_loop(live_client),
+            _supervised("stream", consume_stream_live, on_new_utterance=_on_new_utterance, client=live_client),
+            _supervised("fast", fast_loop),
+            _supervised("slow", slow_loop),
+            _supervised("live_poll", live_poll_loop, live_client),
         )
 
 

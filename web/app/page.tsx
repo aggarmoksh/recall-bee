@@ -62,6 +62,14 @@ export default function TodayPage() {
 
       {error && <p className="text-bad text-lg">{error}</p>}
       {!error && !today && <p className="text-muted text-lg">Loading…</p>}
+      {today?.daemon_offline && (
+        <div className="rounded-2xl bg-[color:var(--bad)]/15 px-6 py-3 text-sm font-medium text-[color:var(--bad)]">
+          Recall is offline
+          {today.daemon_last_tick_at
+            ? ` since ${new Date(today.daemon_last_tick_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+            : ""}
+        </div>
+      )}
 
       {today && (
         <Reveal delay={60}>
@@ -107,8 +115,8 @@ export default function TodayPage() {
                 <p className="text-2xl font-semibold leading-snug">
                   {today.report_card.questions_answered} answered, {today.report_card.solid} solid, {today.report_card.needs_another_look} need another look
                 </p>
-                {today.report_card.questions_processing > 0 && (
-                  <p className="mt-1 text-sm opacity-80">{today.report_card.questions_processing} still processing</p>
+                {today.report_card.questions_needs_review > 0 && (
+                  <p className="mt-1 text-sm opacity-80">{today.report_card.questions_needs_review} need review</p>
                 )}
                 <p className="mt-2 text-sm opacity-80">
                   Session ended {new Date(today.report_card.ended_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}

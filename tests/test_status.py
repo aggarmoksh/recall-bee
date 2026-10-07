@@ -17,6 +17,7 @@ def _patch_all(monkeypatch, engine):
     monkeypatch.setattr("recall.scoring.get_session", lambda: DBSession(engine))
     monkeypatch.setattr("recall.llm.get_session", lambda: DBSession(engine))
     monkeypatch.setattr("recall.questions.get_session", lambda: DBSession(engine))
+    monkeypatch.setattr("recall.heartbeat.get_session", lambda: DBSession(engine))
 
 
 def test_get_status_empty_db(tmp_path, monkeypatch):

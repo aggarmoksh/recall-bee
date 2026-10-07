@@ -27,13 +27,25 @@ CLI:
 
 import argparse
 import difflib
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlmodel import select
 
-from recall.db import Answer, Question, Session, StartPhraseUtterance, Utterance, create_db_and_tables, get_session
+from recall.db import Answer, Question, Session, SessionRun, StartPhraseUtterance, Utterance, create_db_and_tables, get_session
 from recall.llm import get_provider
 from recall.overrides import load_excluded_sessions
+
+# Phase 5G Step 3 (AGENT.md, 2026-10-07): a SessionRun's own window is
+# excluded wholesale, not just the utterances a dispatch actually matched
+# -- a quiz session can contain the operator's own spoken answers that
+# never landed inside any Answer (e.g. a no_answer dispatch, or a reply
+# that arrived outside every window), and those must never feed back into
+# future question generation either. 1 min of slack before started_at
+# covers the spoken start-phrase itself; 10 min after ended_at covers
+# realtime-transcript lag on the session's last few utterances. An
+# active run (ended_at is NULL) extends the window up to `now`.
+SESSION_RUN_EXCLUSION_LEAD_MIN = 1
+SESSION_RUN_EXCLUSION_TRAIL_MIN = 10
 
 DEFAULT_N = 8
 FUZZY_MATCH_THRESHOLD = 0.5
@@ -49,19 +61,31 @@ APPROVAL_BY_SESSION_TYPE = {
 VALID_SESSION_TYPES = set(APPROVAL_BY_SESSION_TYPE)
 
 
-def _excluded_utterance_ids(db) -> set[int]:
-    """No-self-feeding (AGENT.md): utterances inside any answer window, or
-    matched as the spoken session-start phrase, are never source material
-    for new questions."""
+def _excluded_utterance_ids(db, now: datetime | None = None) -> set[int]:
+    """No-self-feeding (AGENT.md): utterances inside any answer window,
+    matched as the spoken session-start phrase, or spoken anywhere inside
+    a quiz SessionRun's own window (Phase 5G Step 3 -- a broader,
+    session-window-based exclusion added after session 28 was found to
+    contain the operator's own spoken quiz answers that no per-utterance
+    match had caught) are never source material for new questions."""
     ids: set[int] = set()
     for answer in db.exec(select(Answer)).all():
         ids.update(answer.utterance_ids)
     for row in db.exec(select(StartPhraseUtterance)).all():
         ids.add(row.utterance_id)
+
+    now = now or datetime.now(UTC)
+    for run in db.exec(select(SessionRun)).all():
+        window_start = run.started_at - timedelta(minutes=SESSION_RUN_EXCLUSION_LEAD_MIN)
+        window_end = (run.ended_at if run.ended_at is not None else now) + timedelta(minutes=SESSION_RUN_EXCLUSION_TRAIL_MIN)
+        rows = db.exec(
+            select(Utterance.id).where(Utterance.spoken_at >= window_start).where(Utterance.spoken_at <= window_end)
+        ).all()
+        ids.update(rows)
     return ids
 
 
-def _session_utterances(db, session: Session, exclude_answer_window: bool = True) -> list[Utterance]:
+def _session_utterances(db, session: Session, exclude_answer_window: bool = True, now: datetime | None = None) -> list[Utterance]:
     utterances = db.exec(
         select(Utterance)
         .where(Utterance.spoken_at >= session.start_at)
@@ -69,7 +93,7 @@ def _session_utterances(db, session: Session, exclude_answer_window: bool = True
         .order_by(Utterance.spoken_at)
     ).all()
     if exclude_answer_window:
-        excluded_ids = _excluded_utterance_ids(db)
+        excluded_ids = _excluded_utterance_ids(db, now=now)
         utterances = [u for u in utterances if u.id not in excluded_ids]
     return utterances
 

@@ -31,7 +31,7 @@ export type ReportCard = {
   questions_answered: number;
   solid: number;
   needs_another_look: number;
-  questions_processing: number;
+  questions_needs_review: number;
   ended_at: string;
 };
 
@@ -43,6 +43,8 @@ export type TodayResponse = {
   session: SessionState;
   recent_answers: RecentAnswer[];
   report_card: ReportCard | null;
+  daemon_last_tick_at: string | null;
+  daemon_offline: boolean;
 };
 
 export type RubricPoint = { point: string; hit: boolean };

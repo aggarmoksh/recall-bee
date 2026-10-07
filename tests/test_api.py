@@ -114,11 +114,11 @@ def test_today_shows_in_session_state_with_current_question(client, db_engine):
     assert body["session"]["current_question"]["question_id"] == question_id
 
 
-def test_today_current_question_skips_a_deferred_dispatch(client, db_engine):
-    """A deferred (status='processing') dispatch has no Answer yet either,
-    same as the real open one -- must not be shown as the current question
+def test_today_current_question_skips_a_needs_review_dispatch(client, db_engine):
+    """A needs_review dispatch (Phase 5G) has no Answer yet either, same
+    as the real open one -- must not be shown as the current question
     (regression: _active_session_payload used to match on 'no Answer'
-    alone, which an older deferred dispatch also satisfies)."""
+    alone, which an older needs_review dispatch also satisfies)."""
     session_id, question_id = _seed_basic(db_engine)
     now = datetime.now(UTC)
     with DBSession(db_engine) as db:
@@ -132,7 +132,7 @@ def test_today_current_question_skips_a_deferred_dispatch(client, db_engine):
         db.add(run)
         db.commit()
         db.refresh(run)
-        db.add(Dispatch(question_id=question_id, bee_todo_id=50, alarm_at=now - timedelta(minutes=3), status="processing", dispatched_at=now - timedelta(minutes=3), session_run_id=run.id))
+        db.add(Dispatch(question_id=question_id, bee_todo_id=50, alarm_at=now - timedelta(minutes=3), status="needs_review", dispatched_at=now - timedelta(minutes=3), session_run_id=run.id))
         db.add(Dispatch(question_id=q2_id, bee_todo_id=51, alarm_at=now, status="pending", dispatched_at=now, session_run_id=run.id))
         db.commit()
 
@@ -170,23 +170,24 @@ def test_today_includes_report_card_for_a_session_ended_today(client, db_engine)
     assert body["report_card"]["needs_another_look"] == 1
 
 
-def test_today_report_card_counts_still_processing_dispatches(client, db_engine):
-    """Phase 5E Step 3: a deferred (not-yet-graded) dispatch counts toward
-    'still processing' on the dashboard, separate from questions_answered."""
+def test_today_report_card_counts_needs_review_dispatches(client, db_engine):
+    """Phase 5G: a needs_review dispatch (the grade-call-count guard
+    stopped grading it) counts separately from questions_answered on the
+    dashboard, replacing the old Phase 5E "processing"/"paused" bucket."""
     session_id, question_id = _seed_basic(db_engine)
     now = datetime.now(UTC)
     with DBSession(db_engine) as db:
-        run = SessionRun(trigger="tick", status="paused", started_at=now - timedelta(minutes=5), ended_at=now, questions_asked=2, questions_answered=0)
+        run = SessionRun(trigger="tick", status="ended_no_answer", started_at=now - timedelta(minutes=5), ended_at=now, questions_asked=2, questions_answered=0)
         db.add(run)
         db.commit()
         db.refresh(run)
-        db.add(Dispatch(question_id=question_id, bee_todo_id=77, alarm_at=now - timedelta(minutes=3), status="processing", dispatched_at=now - timedelta(minutes=3), session_run_id=run.id))
+        db.add(Dispatch(question_id=question_id, bee_todo_id=77, alarm_at=now - timedelta(minutes=3), status="needs_review", dispatched_at=now - timedelta(minutes=3), session_run_id=run.id))
         db.commit()
 
     resp = client.get("/api/today")
     body = resp.json()
     assert body["report_card"] is not None
-    assert body["report_card"]["questions_processing"] == 1
+    assert body["report_card"]["questions_needs_review"] == 1
 
 
 class _FakeExternalAccessClient:
