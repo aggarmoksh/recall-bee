@@ -51,18 +51,35 @@ def warn_on_orphans() -> None:
 
 
 def kill_tree(pid: int, timeout: float = KILL_TIMEOUT_S) -> None:
-    """Terminate children first, then the parent, so nothing gets orphaned."""
+    """Terminate children first, then the parent, so nothing gets orphaned.
+
+    Found live during the 2-day check (2026-10-07): a laptop sleep/resume
+    can kill the bee.exe process tree out from under us between this
+    function being entered and `parent.children(recursive=True)` actually
+    running -- psutil.Process.children() internally re-validates the
+    parent is still alive and raises NoSuchProcess itself if not, a SECOND
+    place this can fail beyond the initial `psutil.Process(pid)` call
+    below. The old code only guarded the first one; the second, uncaught,
+    propagated out of `stream_events()`'s reconnect `finally` block and
+    crashed the entire daemon process -- not just that one reconnect
+    attempt, and before the sleep/wake recovery logic in recall/run.py
+    ever got a chance to run. A NoSuchProcess anywhere in this function
+    just means "already dead, nothing left to clean up here", never a
+    reason to let the caller crash."""
     try:
         parent = psutil.Process(pid)
+        procs = parent.children(recursive=True) + [parent]
     except psutil.NoSuchProcess:
         return
-    procs = parent.children(recursive=True) + [parent]
     for p in procs:
         try:
             p.terminate()
         except psutil.NoSuchProcess:
             pass
-    _, alive = psutil.wait_procs(procs, timeout=timeout)
+    try:
+        _, alive = psutil.wait_procs(procs, timeout=timeout)
+    except psutil.NoSuchProcess:
+        return
     for p in alive:
         try:
             p.kill()
