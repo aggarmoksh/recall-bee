@@ -38,3 +38,13 @@ bedrock.txt
 *.key
 *credentials*
 *secret*
+
+# Video pipeline (Phase V1): raw footage and generated media never committed
+videos/
+video/node_modules/
+video/proxies/
+video/renders/
+video/.venv/
+*.bin
+ggml-*.bin
+whisper.cpp/
