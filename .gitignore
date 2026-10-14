@@ -48,3 +48,4 @@ video/.venv/
 *.bin
 ggml-*.bin
 whisper.cpp/
+video/work/

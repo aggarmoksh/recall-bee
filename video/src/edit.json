@@ -1,0 +1,282 @@
+{
+ "fps": 30,
+ "width": 1920,
+ "height": 1080,
+ "measured": {
+  "t1": 44.05,
+  "t2": 48.4,
+  "t1_icon": 42.5,
+  "t2_icon": 41.4,
+  "A_utc_t0": "2026-10-13T21:16:25Z",
+  "B_utc_t0": "2026-10-13T21:16:17.1Z",
+  "B_minus_A_s": 7.9,
+  "B_offset_err": 2,
+  "B_goal_in": 628.0,
+  "report_in": 618.5
+ },
+ "beats": [
+  {
+   "id": 1,
+   "name": "Cold open",
+   "start": 0,
+   "duration": 20,
+   "scenes": [
+    {
+     "type": "clip",
+     "source": "A",
+     "in": 6.5,
+     "out": 10.5,
+     "layout": "full",
+     "audio": true,
+     "label": {
+      "text": "Real Bee data. Waits cut and timed.",
+      "dur": 3.0
+     }
+    },
+    {
+     "type": "clip",
+     "source": "A",
+     "in": 52.0,
+     "out": 57.0,
+     "layout": "full",
+     "audio": true,
+     "chips": [
+      {
+       "text": "+44 s",
+       "at": 0.15,
+       "dur": 1.8
+      }
+     ]
+    },
+    {
+     "type": "clip",
+     "source": "A",
+     "in": 68.3,
+     "out": 74.3,
+     "layout": "full",
+     "audio": true
+    },
+    {
+     "type": "clip",
+     "source": "A",
+     "in": 127.0,
+     "out": 132.0,
+     "layout": "full",
+     "audio": true,
+     "chips": [
+      {
+       "text": "+48 s",
+       "at": 0.15,
+       "dur": 1.8
+      }
+     ]
+    }
+   ],
+   "needs_operator": [
+    "t1/t2 use the readable text on the watch as 'visible'; with the first alert icon instead they are 42.5 s and 41.4 s",
+    "The watch notification reads 'Lord Moksh' (your name in Bee's rewrite): keep or blur"
+   ]
+  },
+  {
+   "id": 2,
+   "name": "Title",
+   "start": 20,
+   "duration": 4,
+   "scenes": [
+    {
+     "type": "title",
+     "duration": 4,
+     "title": "Recall",
+     "sub": "Bee remembers what you heard. Recall makes sure you do."
+    }
+   ]
+  },
+  {
+   "id": 3,
+   "name": "Problem",
+   "start": 24,
+   "duration": 14,
+   "vo": "Bee hears everything I learn: lectures, study sessions, podcasts. It can summarize them and remember them for me. But in an interview, I'm the one who has to know it.",
+   "scenes": [
+    {
+     "type": "slate",
+     "id": "AI1",
+     "duration": 3
+    },
+    {
+     "type": "clip",
+     "source": "C",
+     "in": 0.5,
+     "out": 11.5,
+     "layout": "phone"
+    }
+   ],
+   "needs_operator": [
+    "AI1 missing (slate for 3 s)"
+   ]
+  },
+  {
+   "id": 4,
+   "name": "Loop",
+   "start": 38,
+   "duration": 14,
+   "vo": "Practicing recall is one of the best-tested ways to learn. Recall turns what Bee heard into quizzes on my wrist that I answer out loud. Bee's transcript is the answer sheet.",
+   "scenes": [
+    {
+     "type": "loop",
+     "duration": 14,
+     "steps": [
+      "Bee hears",
+      "Questions",
+      "Your watch",
+      "Your voice",
+      "Graded",
+      "Next review"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 5,
+   "name": "How it works",
+   "start": 52,
+   "duration": 38,
+   "vo": "When a learning session ends, Recall pulls the transcript through the Bee CLI and skips anything casual or personal. Claude Haiku on Amazon Bedrock writes the questions, each tied to the moment I heard it. When I'm free, I say so, or tick a todo. Each question goes out as a Bee todo with an alarm. Recall reads Bee's live transcript while I'm talking, grades me against a rubric, and sends feedback the same way. Spaced repetition decides when I see it again.",
+   "scenes": [
+    {
+     "type": "split",
+     "duration": 22,
+     "a": {
+      "in": 230.0,
+      "objectPosition": "30% 50%"
+     },
+     "b": {
+      "in": 237.9
+     }
+    },
+    {
+     "type": "clip",
+     "source": "D",
+     "in": 21.0,
+     "out": 23.0,
+     "layout": "inset"
+    },
+    {
+     "type": "clip",
+     "source": "D",
+     "in": 52.0,
+     "out": 54.0,
+     "layout": "inset"
+    },
+    {
+     "type": "slate",
+     "id": "E answer page",
+     "duration": 12
+    }
+   ],
+   "needs_operator": [
+    "E answer page missing (slate for 12 s)",
+    "A/B sync offset estimated from DB alarm times, +-2 s",
+    "B footage is dimmed; brightened in post"
+   ]
+  },
+  {
+   "id": 6,
+   "name": "Why waits",
+   "start": 90,
+   "duration": 22,
+   "vo": "My first version quizzed me at random times. Six prompts, four missed: driving, asleep, or the alert hit my phone. So Recall waits for you. It nudges after a lecture and in your active hours, holds off while Bee hears you talking, and a missed question never counts against you.",
+   "scenes": [
+    {
+     "type": "miss",
+     "duration": 5,
+     "text": "Version 1: 6 pop quizzes, 4 missed"
+    },
+    {
+     "type": "nudge",
+     "duration": 8,
+     "text": "Recall: 6 questions are buzzing for you. Say Hey Bee, let's do a Recall session when you can talk."
+    },
+    {
+     "type": "clip",
+     "source": "B",
+     "in": 628.0,
+     "out": 637.0,
+     "layout": "full"
+    }
+   ],
+   "needs_operator": [
+    "Nudge N shown as 6; stings.py fills in the real due count"
+   ]
+  },
+  {
+   "id": 7,
+   "name": "Results",
+   "start": 112,
+   "duration": 11,
+   "vo": "In my first two real sessions, I started each one with a single sentence and answered all twelve questions.",
+   "scenes": [
+    {
+     "type": "clip",
+     "source": "A",
+     "in": 618.5,
+     "out": 624.5,
+     "layout": "full"
+    },
+    {
+     "type": "slate",
+     "id": "E progress",
+     "duration": 5
+    }
+   ],
+   "needs_operator": [
+    "E progress missing (slate for 5 s)",
+    "VO claims \"first two real sessions ... twelve questions\": DB sessions 7 and 8 are 6/6 each"
+   ]
+  },
+  {
+   "id": 8,
+   "name": "Privacy",
+   "start": 123,
+   "duration": 11,
+   "vo": "Recall only quizzes on learning sessions. Casual and personal conversations are skipped, and it never touches audio. This page shows what it ignored, and why.",
+   "scenes": [
+    {
+     "type": "slate",
+     "id": "E privacy",
+     "duration": 5.5
+    },
+    {
+     "type": "slate",
+     "id": "E sessions",
+     "duration": 5.5
+    }
+   ],
+   "needs_operator": [
+    "E privacy and E sessions missing"
+   ]
+  },
+  {
+   "id": 10,
+   "name": "Architecture + end",
+   "start": 134,
+   "duration": 12,
+   "vo": "Built on the Bee CLI and Amazon Bedrock, open source under MIT. Bee remembers what you heard. Recall makes sure you do.",
+   "scenes": [
+    {
+     "type": "arch",
+     "duration": 8
+    },
+    {
+     "type": "end",
+     "duration": 4,
+     "url": "[repo URL placeholder]",
+     "line": "Bee remembers what you heard. Recall makes sure you do."
+    }
+   ],
+   "needs_operator": [
+    "Repo URL placeholder"
+   ]
+  }
+ ]
+}

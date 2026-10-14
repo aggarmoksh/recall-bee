@@ -1,0 +1,26 @@
+{
+  "t1": 44.05,
+  "t2": 48.4,
+  "t1_icon": 42.5,
+  "t2_icon": 41.4,
+  "A_utc_t0": "2026-10-13T21:16:25Z",
+  "B_utc_t0": "2026-10-13T21:16:17.1Z",
+  "B_minus_A_s": 7.9,
+  "B_offset_err": 2,
+  "phrase_speech": [7.75, 9.95],
+  "answer_speech": [68.35, 80.6],
+  "cold": {
+    "phrase_in": 6.5, "phrase_out": 10.5,
+    "q1_in": 52.0, "q1_out": 57.0,
+    "ans_in": 68.3, "ans_out": 74.3,
+    "fb_in": 127.0, "fb_out": 132.0
+  },
+  "split": {"a_in": 230.0, "b_in": 237.9, "a_pos": "30% 50%"},
+  "D": {"q_in": 21.0, "cap_in": 52.0},
+  "B_goal_in": 628.0,
+  "report_in": 618.5,
+  "needs_cold": [
+    "t1/t2 use the readable text on the watch as 'visible'; with the first alert icon instead they are 42.5 s and 41.4 s",
+    "The watch notification reads 'Lord Moksh' (your name in Bee's rewrite): keep or blur"
+  ]
+}
