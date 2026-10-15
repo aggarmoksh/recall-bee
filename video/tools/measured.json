@@ -85,7 +85,7 @@
  "stills": {
   "answer68": {
    "file": "answer68.png",
-   "h": 1080,
+   "h": 750,
    "keys": [
     {
      "t": 0,
@@ -135,7 +135,8 @@
      "cy": 676,
      "z": 2.0
     }
-   ]
+   ],
+   "design": 12
   },
   "progress": {
    "file": "progress.png",
@@ -159,7 +160,8 @@
      "cy": 395,
      "z": 2.4
     }
-   ]
+   ],
+   "design": 5
   },
   "privacy": {
    "file": "privacy.png",
@@ -189,7 +191,8 @@
      "cy": 700,
      "z": 1.8
     }
-   ]
+   ],
+   "design": 5.5
   },
   "sessions": {
    "file": "sessions_top.png",
@@ -207,7 +210,8 @@
      "cy": 340,
      "z": 2.0
     }
-   ]
+   ],
+   "design": 5.5
   }
  }
 }

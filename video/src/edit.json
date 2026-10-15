@@ -134,7 +134,7 @@
     {
      "type": "clip",
      "source": "AI1",
-     "in": 2.0,
+     "in": 1.5,
      "out": 5.0,
      "layout": "full",
      "crop": {
@@ -148,20 +148,22 @@
      "blurLeft": {
       "to": 0.36,
       "fade": 0.46
-     }
+     },
+     "rate": 0.7532
     },
     {
      "type": "clip",
      "source": "AI4",
-     "in": 1.5,
-     "out": 3.5,
-     "layout": "full"
+     "in": 3.0,
+     "out": 6.062,
+     "layout": "full",
+     "lift": 1.7
     },
     {
      "type": "clip",
      "source": "C",
      "in": 0.2,
-     "out": 2.7,
+     "out": 1.879,
      "layout": "scroll",
      "rate": 0.5,
      "pan": {
@@ -172,34 +174,40 @@
     {
      "type": "clip",
      "source": "AI2",
-     "in": 2.0,
+     "in": 2.196,
      "out": 6.0,
      "layout": "full"
+    }
+   ],
+   "needs_operator": [
+    "AI1: the shot is a 1.4x crop, slowed to 0.75x, with the laptop-screen side blurred (no 2 s window is free of the player UI while the student is in frame)",
+    "AI2 still shows illegible handwriting before it fades to the blank page (rejected in V2.5, used because the brief calls for it)"
+   ],
+   "duration": 14.871,
+   "vo_placed": true,
+   "audio": [
+    {
+     "src": "vo_03.wav",
+     "at": 0.25
     }
    ],
    "captions": [
     {
      "text": "Bee hears everything I learn: lectures, study sessions, podcasts.",
-     "from": 0.15,
-     "to": 4.85
+     "from": 0.2,
+     "to": 7.74
     },
     {
      "text": "It can summarize them and remember them for me.",
-     "from": 5.15,
-     "to": 9.85
+     "from": 7.76,
+     "to": 11.1
     },
     {
      "text": "But in an interview, I'm the one who has to know it.",
-     "from": 10.15,
-     "to": 13.85
+     "from": 11.12,
+     "to": 14.52
     }
    ],
-   "needs_operator": [
-    "AI1: the shot is a 1.4x crop with the laptop-screen side blurred (no 2 s window is free of the player UI while the student is in frame)",
-    "Beat 3 captions are timed to the visuals (AI1 / C / AI2); with a real VO they are retimed to the audio"
-   ],
-   "duration": 14.0,
-   "vo_placed": false,
    "start": 24.0
   },
   {
@@ -215,7 +223,7 @@
     },
     {
      "type": "loop",
-     "duration": 12,
+     "duration": 14.151,
      "steps": [
       "Bee hears",
       "Questions",
@@ -223,29 +231,43 @@
       "Your voice",
       "Graded",
       "Next review"
+     ],
+     "at": [
+      5.89,
+      7.15,
+      7.86,
+      8.61,
+      11.56,
+      12.4
      ]
     }
    ],
-   "duration": 14.0,
-   "vo_placed": false,
+   "duration": 16.151,
+   "vo_placed": true,
+   "audio": [
+    {
+     "src": "vo_04.wav",
+     "at": 0.25
+    }
+   ],
    "captions": [
     {
      "text": "Practicing recall is one of the best-tested ways to learn.",
-     "from": 0.15,
-     "to": 4.75
+     "from": 0.29,
+     "to": 6.76
     },
     {
      "text": "Recall turns what Bee heard into quizzes on my wrist that I answer out loud.",
-     "from": 4.75,
-     "to": 10.77
+     "from": 6.78,
+     "to": 12.18
     },
     {
      "text": "Bee's transcript is the answer sheet.",
-     "from": 10.77,
-     "to": 13.7
+     "from": 12.2,
+     "to": 15.8
     }
    ],
-   "start": 38.0
+   "start": 38.87
   },
   {
    "id": 5,
@@ -253,7 +275,7 @@
    "scenes": [
     {
      "type": "split",
-     "duration": 22,
+     "duration": 15.854,
      "a": {
       "in": 230.0,
       "objectPosition": "34% 50%"
@@ -266,112 +288,132 @@
      "type": "clip",
      "source": "D",
      "in": 21.0,
-     "out": 23.0,
+     "out": 25.058,
      "layout": "inset"
     },
     {
      "type": "clip",
      "source": "D",
      "in": 52.0,
-     "out": 54.0,
+     "out": 56.058,
      "layout": "inset"
     },
     {
      "type": "still",
-     "duration": 12,
+     "duration": 14.03,
      "src": "answer68.png",
-     "h": 1080,
+     "h": 750,
+     "cut": true,
      "keys": [
       {
-       "t": 0,
+       "t": 0.0,
        "cx": 960,
        "cy": 270,
        "z": 1.5
       },
       {
-       "t": 2.8,
+       "t": 1.0,
        "cx": 960,
        "cy": 280,
        "z": 1.55
       },
       {
-       "t": 3.6,
+       "t": 1.1,
        "cx": 716,
        "cy": 452,
        "z": 2.2
       },
       {
-       "t": 6.4,
+       "t": 4.35,
        "cx": 730,
        "cy": 458,
-       "z": 2.2
+       "z": 2.25
       },
       {
-       "t": 7.2,
+       "t": 4.4,
        "cx": 1204,
        "cy": 452,
        "z": 2.2
       },
       {
-       "t": 9.2,
+       "t": 5.89,
        "cx": 1215,
        "cy": 458,
-       "z": 2.2
+       "z": 2.25
       },
       {
-       "t": 10.0,
+       "t": 5.94,
        "cx": 960,
-       "cy": 672,
+       "cy": 600,
        "z": 2.0
       },
       {
-       "t": 12,
+       "t": 8.433,
        "cx": 960,
-       "cy": 676,
-       "z": 2.0
+       "cy": 604,
+       "z": 2.05
+      },
+      {
+       "t": 8.483,
+       "cx": 960,
+       "cy": 400,
+       "z": 1.25
+      },
+      {
+       "t": 14.03,
+       "cx": 960,
+       "cy": 405,
+       "z": 1.3
       }
      ]
     }
    ],
    "needs_operator": [
     "A/B sync offset estimated from DB alarm times, +-2 s",
-    "A in the split uses a static crop (30% horizontal) and may clip the watch"
+    "The dashboard crop (greeting, daily goal, question card) is scaled to the right half WIDTH; filling the half HEIGHT would need a zoom that cuts the cards",
+    "The answer page file is cropped above its \"Source\" line, whose server-rendered date reads D/M/YYYY (12/10/2026)"
    ],
    "duration": 38.0,
-   "vo_placed": false,
+   "vo_placed": true,
+   "audio": [
+    {
+     "src": "vo_05.wav",
+     "at": 0.25
+    }
+   ],
    "captions": [
     {
      "text": "When a learning session ends, Recall pulls the transcript through the Bee CLI",
-     "from": 0.15,
-     "to": 6.5
+     "from": 0.29,
+     "to": 6.38
     },
     {
      "text": "and skips anything casual or personal.",
-     "from": 6.5,
-     "to": 9.64
+     "from": 6.4,
+     "to": 9.51
     },
     {
      "text": "Claude Haiku on Amazon Bedrock writes the questions, each tied to the moment I heard it.",
-     "from": 9.64,
-     "to": 16.9
+     "from": 9.53,
+     "to": 15.88
     },
     {
      "text": "When I'm free, I say so, or tick a todo. Each question goes out as a Bee todo with an alarm.",
-     "from": 16.9,
-     "to": 24.5
+     "from": 15.9,
+     "to": 24.0
     },
     {
      "text": "Recall reads Bee's live transcript while I'm talking, grades me against a rubric,",
-     "from": 24.5,
-     "to": 31.18
+     "from": 24.02,
+     "to": 29.84
     },
     {
      "text": "and sends feedback the same way. Spaced repetition decides when I see it again.",
-     "from": 31.18,
-     "to": 37.7
+     "from": 29.86,
+     "to": 35.85
     }
    ],
-   "start": 52.0
+   "start": 55.02
   },
   {
    "id": 6,
@@ -379,50 +421,56 @@
    "scenes": [
     {
      "type": "miss",
-     "duration": 5,
+     "duration": 13.26,
      "text": "Version 1: 6 pop quizzes, 4 missed"
     },
     {
      "type": "nudge",
-     "duration": 8,
+     "duration": 6.749,
      "text": "Recall: 6 questions are buzzing for you. Say Hey Bee, let's do a Recall session when you can talk."
     },
     {
      "type": "clip",
      "source": "B",
-     "in": 628.0,
-     "out": 637.0,
+     "in": 630.492,
+     "out": 637.3,
      "layout": "full"
     }
    ],
    "needs_operator": [
     "Nudge N shown as 6; stings.py fills in the real due count"
    ],
-   "duration": 22.0,
-   "vo_placed": false,
+   "duration": 26.817,
+   "vo_placed": true,
+   "audio": [
+    {
+     "src": "vo_06.wav",
+     "at": 0.25
+    }
+   ],
    "captions": [
     {
      "text": "My first version quizzed me at random times.",
-     "from": 0.15,
-     "to": 3.6
+     "from": 0.28,
+     "to": 4.55
     },
     {
      "text": "Six prompts, four missed: driving, asleep, or the alert hit my phone. So Recall waits for you.",
-     "from": 3.6,
-     "to": 10.96
+     "from": 4.57,
+     "to": 17.0
     },
     {
      "text": "It nudges after a lecture and in your active hours, holds off while Bee hears you talking,",
-     "from": 10.96,
-     "to": 18.02
+     "from": 17.02,
+     "to": 22.53
     },
     {
      "text": "and a missed question never counts against you.",
-     "from": 18.02,
-     "to": 21.7
+     "from": 22.55,
+     "to": 26.77
     }
    ],
-   "start": 90.0
+   "start": 93.02
   },
   {
    "id": 7,
@@ -432,30 +480,30 @@
      "type": "clip",
      "source": "A",
      "in": 618.5,
-     "out": 624.5,
+     "out": 623.27,
      "layout": "full",
      "push": true
     },
     {
      "type": "still",
-     "duration": 5,
+     "duration": 6.23,
      "src": "progress.png",
      "h": 1592,
      "keys": [
       {
-       "t": 0,
+       "t": 0.0,
        "cx": 880,
        "cy": 300,
        "z": 2.0
       },
       {
-       "t": 2.2,
+       "t": 2.741,
        "cx": 870,
        "cy": 390,
        "z": 2.4
       },
       {
-       "t": 5,
+       "t": 6.23,
        "cx": 1030,
        "cy": 395,
        "z": 2.4
@@ -467,20 +515,26 @@
     "VO says \"first two real sessions ... twelve questions\": DB sessions 7 and 8 are 6/6 each"
    ],
    "duration": 11.0,
-   "vo_placed": false,
+   "vo_placed": true,
+   "audio": [
+    {
+     "src": "vo_07.wav",
+     "at": 0.25
+    }
+   ],
    "captions": [
     {
      "text": "In my first two real sessions, I started each one with a single sentence",
-     "from": 0.15,
-     "to": 7.32
+     "from": 0.28,
+     "to": 4.8
     },
     {
      "text": "and answered all twelve questions.",
-     "from": 7.32,
-     "to": 10.7
+     "from": 4.82,
+     "to": 7.95
     }
    ],
-   "start": 112.0
+   "start": 119.84
   },
   {
    "id": 8,
@@ -488,30 +542,30 @@
    "scenes": [
     {
      "type": "still",
-     "duration": 5.5,
+     "duration": 9.477,
      "src": "privacy.png",
      "h": 1097,
      "keys": [
       {
-       "t": 0,
+       "t": 0.0,
        "cx": 960,
        "cy": 300,
        "z": 1.6
       },
       {
-       "t": 2.4,
+       "t": 4.135,
        "cx": 960,
        "cy": 330,
        "z": 1.7
       },
       {
-       "t": 3.3,
+       "t": 5.686,
        "cx": 960,
        "cy": 640,
        "z": 1.8
       },
       {
-       "t": 5.5,
+       "t": 9.477,
        "cx": 960,
        "cy": 700,
        "z": 1.8
@@ -520,18 +574,18 @@
     },
     {
      "type": "still",
-     "duration": 5.5,
+     "duration": 4.284,
      "src": "sessions_top.png",
      "h": 800,
      "keys": [
       {
-       "t": 0,
+       "t": 0.0,
        "cx": 960,
        "cy": 300,
        "z": 2.0
       },
       {
-       "t": 5.5,
+       "t": 4.284,
        "cx": 960,
        "cy": 340,
        "z": 2.0
@@ -543,26 +597,32 @@
     "Sessions still is cropped to the top rows; a lower row names a speaker (public lecture) and is kept out of the file entirely",
     "Dashboard row text (scores, session descriptions) stays under 40 px even zoomed; headings, numbers and rule text reach 40 px"
    ],
-   "duration": 11.0,
-   "vo_placed": false,
+   "duration": 13.761,
+   "vo_placed": true,
+   "audio": [
+    {
+     "src": "vo_08.wav",
+     "at": 0.25
+    }
+   ],
    "captions": [
     {
      "text": "Recall only quizzes on learning sessions.",
-     "from": 0.15,
-     "to": 2.92
+     "from": 0.28,
+     "to": 4.67
     },
     {
      "text": "Casual and personal conversations are skipped, and it never touches audio.",
-     "from": 2.92,
-     "to": 7.93
+     "from": 4.69,
+     "to": 9.51
     },
     {
      "text": "This page shows what it ignored, and why.",
-     "from": 7.93,
-     "to": 10.7
+     "from": 9.53,
+     "to": 13.41
     }
    ],
-   "start": 123.0
+   "start": 130.84
   },
   {
    "id": 10,
@@ -570,11 +630,11 @@
    "scenes": [
     {
      "type": "arch",
-     "duration": 8
+     "duration": 7.643
     },
     {
      "type": "end",
-     "duration": 4,
+     "duration": 5.521,
      "url": "[repo URL placeholder]",
      "line": "",
      "backdrop": {
@@ -585,23 +645,65 @@
     }
    ],
    "needs_operator": [
-    "Repo URL placeholder"
+    "Repo URL is a placeholder until REPO_URL is set (video/config.json)"
    ],
-   "duration": 12,
-   "vo_placed": false,
+   "duration": 13.164,
+   "vo_placed": true,
+   "audio": [
+    {
+     "src": "vo_10.wav",
+     "at": 0.25
+    }
+   ],
    "captions": [
     {
      "text": "Built on the Bee CLI and Amazon Bedrock, open source under MIT.",
-     "from": 0.15,
-     "to": 6.32
+     "from": 0.28,
+     "to": 7.67
     },
     {
      "text": "Bee remembers what you heard. Recall makes sure you do.",
-     "from": 6.32,
-     "to": 11.7
+     "from": 7.69,
+     "to": 12.81
     }
    ],
-   "start": 134.0
+   "start": 144.6
   }
- ]
+ ],
+ "music": {
+  "src": "music.wav",
+  "start": 20.0,
+  "end": 157.76,
+  "duck": [
+   {
+    "from": 24.25,
+    "to": 38.52
+   },
+   {
+    "from": 39.12,
+    "to": 54.67
+   },
+   {
+    "from": 55.27,
+    "to": 90.87
+   },
+   {
+    "from": 93.27,
+    "to": 119.49
+   },
+   {
+    "from": 120.09,
+    "to": 127.79
+   },
+   {
+    "from": 131.09,
+    "to": 144.25
+   },
+   {
+    "from": 144.85,
+    "to": 157.41
+   }
+  ],
+  "skip": 9.0
+ }
 }

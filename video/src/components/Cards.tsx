@@ -39,7 +39,7 @@ export const TitleCard: React.FC<{title: string; sub: string; transparent?: bool
 };
 
 // Six boxes in one row, 1840 px wide (96% of the frame), one short line each, 46 px text.
-export const LoopCard: React.FC<{steps: string[]; duration: number}> = ({steps, duration}) => {
+export const LoopCard: React.FC<{steps: string[]; duration: number; at?: number[]}> = ({steps, duration, at: times}) => {
   const frame = useCurrentFrame();
   const {fps} = useVideoConfig();
   const t = frame / fps;
@@ -48,7 +48,7 @@ export const LoopCard: React.FC<{steps: string[]; duration: number}> = ({steps, 
     <Base>
       <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: 1840}}>
         {steps.map((s, i) => {
-          const at = 0.3 + i * per;
+          const at = times ? times[i] : 0.3 + i * per;
           const on = t >= at;
           const o = interpolate(t, [at, at + 0.35], [0, 1], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'});
           return (

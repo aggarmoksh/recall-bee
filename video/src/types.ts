@@ -11,6 +11,7 @@ export type ClipScene = {
   zoom?: {from: number; to: number; ox: string; oy: string};
   pan?: {from: number; to: number};
   rate?: number;
+  lift?: number;
   push?: boolean;
   darken?: number;
   crop?: {x: number; y: number; w: number; h: number; srcW: number; srcH: number};
@@ -24,6 +25,7 @@ export type ClipScene = {
 
 export type SplitScene = {
   type: 'split';
+  bCrop?: {x: number; y: number; w: number; h: number};
   duration: number;
   a: {in: number; objectPosition?: string};
   b: {in: number};
@@ -38,8 +40,8 @@ export type StillKey = {t: number; cx: number; cy: number; z: number};
 
 export type CardScene =
   | {type: 'title'; duration: number; title: string; sub: string; backdrop?: Backdrop}
-  | {type: 'still'; duration: number; src: string; h: number; keys: StillKey[]}
-  | {type: 'loop'; duration: number; steps: string[]}
+  | {type: 'still'; duration: number; src: string; h: number; keys: StillKey[]; cut?: boolean}
+  | {type: 'loop'; duration: number; steps: string[]; at?: number[]}
   | {type: 'miss'; duration: number; text: string}
   | {type: 'nudge'; duration: number; text: string}
   | {type: 'arch'; duration: number}
@@ -65,7 +67,7 @@ export type Beat = {
   needs_operator?: string[];
 };
 
-export type Music = {src: string; start: number; end: number; duck: {from: number; to: number}[]};
+export type Music = {src: string; start: number; end: number; duck: {from: number; to: number}[]; skip?: number};
 
 export type Edit = {
   music?: Music;

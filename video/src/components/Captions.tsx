@@ -30,7 +30,7 @@ export const Captions: React.FC<{captions: Caption[]; bottom?: number}> = ({capt
       )}
       <div
         style={{
-          maxWidth: 1560,
+          maxWidth: 1740,
           textAlign: 'center',
           fontFamily: theme.font,
           fontSize: 54,

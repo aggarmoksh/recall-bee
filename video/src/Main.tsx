@@ -26,17 +26,17 @@ export const totalFrames = (): number => Math.round(data.beats.reduce((s, b) => 
 const gradeFor = (source: SourceId): string | undefined =>
   source === 'B' ? `brightness(1.65) ${GRADE}` : REAL_SOURCES.includes(source) ? GRADE : undefined;
 
-// C shown large: 1300 px wide, cropped to the top of the Bee summary, slowly panning down as the recording scrolls.
+// C shown large: 1500 px wide in a 1000 px window centred in the frame, cropped to the top of the Bee summary, slowly panning down.
 const ScrollClip: React.FC<{scene: ClipScene; fps: number}> = ({scene, fps}) => {
   const frame = useCurrentFrame();
   const {durationInFrames} = useVideoConfig();
-  const W = 1300;
+  const W = 1500;
   const H = (W * 1920) / 884;
   const pan = scene.pan ?? {from: 0.15, to: 0.23};
   const y = interpolate(frame, [0, durationInFrames], [pan.from * H, pan.to * H]);
   return (
-    <AbsoluteFill style={{background: theme.bg, justifyContent: 'flex-start', alignItems: 'center', paddingTop: 30}}>
-      <div style={{width: W, height: 840, overflow: 'hidden', borderRadius: 30, position: 'relative'}}>
+    <AbsoluteFill style={{background: theme.bg, justifyContent: 'center', alignItems: 'center'}}>
+      <div style={{width: W, height: 1000, overflow: 'hidden', borderRadius: 30, position: 'relative'}}>
         <OffthreadVideo
           src={staticFile(FILE[scene.source])}
           startFrom={Math.round(scene.in * fps)}
@@ -60,6 +60,7 @@ const CropClip: React.FC<{scene: ClipScene; fps: number}> = ({scene, fps}) => {
       startFrom={Math.round(scene.in * fps)}
       endAt={Math.round(scene.out * fps)}
       muted
+      playbackRate={scene.rate ?? 1}
       style={{position: 'absolute', left: -c.x * k, top: -c.y * k, width: c.srcW * k, height: c.srcH * k, filter: blur ? `blur(${blur}px)` : undefined}}
     />
   );
@@ -119,7 +120,7 @@ const SceneView: React.FC<{scene: Scene; fps: number}> = ({scene, fps}) => {
         const z = scene.zoom;
         const zoom = z ? interpolate(frame, [0, durationInFrames], [z.from, z.to]) : 1;
         const push = scene.push ? interpolate(frame, [0, durationInFrames], [1.0, 1.06]) : 1; // wrist shots: slow push-in
-        const darken = scene.darken ? `brightness(${1 - scene.darken}) ` : '';
+        const darken = scene.darken ? `brightness(${1 - scene.darken}) ` : scene.lift ? `brightness(${scene.lift}) ` : '';
         video = (
           <AbsoluteFill style={{background: theme.bg, overflow: 'hidden'}}>
             <OffthreadVideo
@@ -150,7 +151,7 @@ const SceneView: React.FC<{scene: Scene; fps: number}> = ({scene, fps}) => {
       );
     }
     case 'still':
-      return <StillPan src={scene.src} h={scene.h} keys={scene.keys} />;
+      return <StillPan src={scene.src} h={scene.h} keys={scene.keys} cut={scene.cut} />;
     case 'split':
       return (
         <SplitScreen
@@ -158,6 +159,7 @@ const SceneView: React.FC<{scene: Scene; fps: number}> = ({scene, fps}) => {
           bFrom={Math.round(scene.b.in * fps)}
           frames={Math.round(scene.duration * fps)}
           aPosition={scene.a.objectPosition}
+          bCrop={scene.bCrop}
         />
       );
     case 'slate':
@@ -170,7 +172,7 @@ const SceneView: React.FC<{scene: Scene; fps: number}> = ({scene, fps}) => {
         </AbsoluteFill>
       );
     case 'loop':
-      return <LoopCard steps={scene.steps} duration={scene.duration} />;
+      return <LoopCard steps={scene.steps} duration={scene.duration} at={scene.at} />;
     case 'miss':
       return <MissCard text={scene.text} />;
     case 'nudge':
@@ -234,7 +236,7 @@ const MusicBed: React.FC<{m: NonNullable<Edit['music']>; fps: number}> = ({m, fp
     const t = m.start + f / fps;
     const fade = Math.min(
       interpolate(t, [m.start, m.start + 2], [0, 1], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'}),
-      interpolate(t, [m.end - 2, m.end], [1, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'}),
+      interpolate(t, [m.end - 3, m.end], [1, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'}),
     );
     let g = 1;
     for (const r of m.duck) {
@@ -244,7 +246,7 @@ const MusicBed: React.FC<{m: NonNullable<Edit['music']>; fps: number}> = ({m, fp
   };
   return (
     <Sequence from={Math.round(m.start * fps)} durationInFrames={Math.round((m.end - m.start) * fps)}>
-      <Audio src={staticFile(m.src)} volume={volume} />
+      <Audio src={staticFile(m.src)} volume={volume} startFrom={Math.round((m.skip ?? 0) * fps)} />
     </Sequence>
   );
 };

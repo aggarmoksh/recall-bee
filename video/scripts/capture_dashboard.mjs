@@ -18,8 +18,9 @@ const pages = [
 ];
 
 fs.mkdirSync(OUT, {recursive: true});
-const browser = await puppeteer.launch({executablePath: CHROME, headless: 'shell', args: ['--no-sandbox']});
+const browser = await puppeteer.launch({executablePath: CHROME, headless: 'shell', args: ['--no-sandbox', '--lang=en-US']});
 const page = await browser.newPage();
+await page.setExtraHTTPHeaders({'Accept-Language': 'en-US,en;q=0.9'});
 await page.setViewport({width: 1920, height: 1080, deviceScaleFactor: 2});
 await page.emulateMediaFeatures([{name: 'prefers-color-scheme', value: 'dark'}]);
 
