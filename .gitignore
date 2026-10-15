@@ -52,3 +52,6 @@ video/work/
 
 # AI shot generation log (spend + seeds), local only
 video/ai_log.jsonl
+
+# Phase 0 probes hold real Bee captures: never tracked, never published
+/phase0/

@@ -3,7 +3,7 @@ from pathlib import Path
 from recall.bee import stream as stream_module
 from recall.bee.stream import parse_line
 
-FIXTURE_PATH = Path(__file__).parent / "fixtures" / "bee_stream_sample.ndjson"
+FIXTURE_PATH = Path(__file__).parent / "fixtures" / "stream_sample_synthetic.ndjson"
 
 
 def _fixture_lines() -> list[str]:
