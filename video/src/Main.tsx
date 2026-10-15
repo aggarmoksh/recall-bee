@@ -1,10 +1,10 @@
 import React from 'react';
-import {AbsoluteFill, OffthreadVideo, Sequence, staticFile} from 'remotion';
+import {AbsoluteFill, Audio, interpolate, OffthreadVideo, Sequence, staticFile, useCurrentFrame, useVideoConfig} from 'remotion';
 import edit from './edit.json';
 import {theme} from './theme';
-import type {Beat, Edit, Scene, SourceId} from './types';
+import type {Beat, ClipScene, Edit, Scene, SourceId} from './types';
 import {sceneDuration} from './types';
-import {Captions, autoCaptions} from './components/Captions';
+import {Captions} from './components/Captions';
 import {ArchitectureCard, EndCard, LoopCard, MissCard, NudgeCard, TitleCard} from './components/Cards';
 import {PhoneFrame} from './components/PhoneFrame';
 import {Slate} from './components/Slate';
@@ -13,22 +13,53 @@ import {CornerLabel, TimeChip} from './components/TimeChip';
 import {WatchInset} from './components/WatchInset';
 
 const data = edit as unknown as Edit;
-const FILE: Record<SourceId, string> = {A: 'A.mp4', B: 'B.mp4', C: 'C.mp4', D: 'D.mp4'};
+const FILE: Record<SourceId, string> = {A: 'A.mp4', B: 'B.mp4', C: 'C.mp4', D: 'D.mp4', E: 'E.mp4'};
 
 export const totalFrames = (): number => Math.round(data.beats.reduce((s, b) => s + b.duration, 0) * data.fps);
 
+// C shown large: 1300 px wide, cropped to the top of the Bee summary, slowly panning down as the recording scrolls.
+const ScrollClip: React.FC<{scene: ClipScene; fps: number}> = ({scene, fps}) => {
+  const frame = useCurrentFrame();
+  const {durationInFrames} = useVideoConfig();
+  const W = 1300;
+  const H = (W * 1920) / 884;
+  const pan = scene.pan ?? {from: 0.15, to: 0.23};
+  const y = interpolate(frame, [0, durationInFrames], [pan.from * H, pan.to * H]);
+  return (
+    <AbsoluteFill style={{background: theme.bg, justifyContent: 'flex-start', alignItems: 'center', paddingTop: 30}}>
+      <div style={{width: W, height: 840, overflow: 'hidden', borderRadius: 30, position: 'relative'}}>
+        <OffthreadVideo
+          src={staticFile(FILE[scene.source])}
+          startFrom={Math.round(scene.in * fps)}
+          endAt={Math.round(scene.out * fps)}
+          muted
+          playbackRate={scene.rate ?? 1}
+          style={{position: 'absolute', left: 0, top: -y, width: W, height: H}}
+        />
+      </div>
+    </AbsoluteFill>
+  );
+};
+
 const SceneView: React.FC<{scene: Scene; fps: number}> = ({scene, fps}) => {
+  const frame = useCurrentFrame();
+  const {durationInFrames} = useVideoConfig();
   switch (scene.type) {
     case 'clip': {
       const from = Math.round(scene.in * fps);
       const end = Math.round(scene.out * fps);
-      const video =
-        scene.layout === 'phone' ? (
-          <PhoneFrame src={FILE[scene.source]} startFrom={from} endAt={end} muted={!scene.audio} />
-        ) : scene.layout === 'inset' ? (
-          <WatchInset src={FILE[scene.source]} startFrom={from} endAt={end} />
-        ) : (
-          <AbsoluteFill style={{background: theme.bg}}>
+      let video: React.ReactNode;
+      if (scene.layout === 'phone') {
+        video = <PhoneFrame src={FILE[scene.source]} startFrom={from} endAt={end} muted={!scene.audio} />;
+      } else if (scene.layout === 'inset') {
+        video = <WatchInset src={FILE[scene.source]} startFrom={from} endAt={end} />;
+      } else if (scene.layout === 'scroll') {
+        video = <ScrollClip scene={scene} fps={fps} />;
+      } else {
+        const z = scene.zoom;
+        const scale = z ? interpolate(frame, [0, durationInFrames], [z.from, z.to]) : 1;
+        video = (
+          <AbsoluteFill style={{background: theme.bg, overflow: 'hidden'}}>
             <OffthreadVideo
               src={staticFile(FILE[scene.source])}
               startFrom={from}
@@ -40,10 +71,13 @@ const SceneView: React.FC<{scene: Scene; fps: number}> = ({scene, fps}) => {
                 objectFit: scene.source === 'A' ? 'cover' : 'contain',
                 objectPosition: scene.objectPosition ?? '50% 50%',
                 filter: scene.source === 'B' ? 'brightness(1.65)' : undefined,
+                transform: `scale(${scale})`,
+                transformOrigin: z ? `${z.ox} ${z.oy}` : '50% 50%',
               }}
             />
           </AbsoluteFill>
         );
+      }
       return (
         <AbsoluteFill>
           {video}
@@ -80,7 +114,7 @@ const SceneView: React.FC<{scene: Scene; fps: number}> = ({scene, fps}) => {
 
 const BeatView: React.FC<{beat: Beat; fps: number}> = ({beat, fps}) => {
   let at = 0;
-  const captions = beat.captions ?? (beat.vo ? autoCaptions(beat.vo, beat.duration) : []);
+  const captions = beat.captions ?? [];
   return (
     <AbsoluteFill style={{background: theme.bg}}>
       {beat.scenes.map((scene, i) => {
@@ -93,7 +127,12 @@ const BeatView: React.FC<{beat: Beat; fps: number}> = ({beat, fps}) => {
           </Sequence>
         );
       })}
-      {captions.length > 0 && <Captions captions={captions} />}
+      {beat.audio?.map((a) => (
+        <Sequence key={a.src} from={Math.round(a.at * fps)}>
+          <Audio src={staticFile(a.src)} volume={a.volume ?? 1} />
+        </Sequence>
+      ))}
+      {captions.length > 0 && <Captions captions={captions} bottom={beat.caption_bottom} />}
     </AbsoluteFill>
   );
 };

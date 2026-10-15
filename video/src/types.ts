@@ -1,4 +1,4 @@
-export type SourceId = 'A' | 'B' | 'C' | 'D';
+export type SourceId = 'A' | 'B' | 'C' | 'D' | 'E';
 
 export type Chip = {text: string; at: number; dur: number};
 
@@ -7,7 +7,10 @@ export type ClipScene = {
   source: SourceId;
   in: number;
   out: number;
-  layout: 'full' | 'phone' | 'inset';
+  layout: 'full' | 'phone' | 'inset' | 'scroll';
+  zoom?: {from: number; to: number; ox: string; oy: string};
+  pan?: {from: number; to: number};
+  rate?: number;
   chips?: Chip[];
   label?: {text: string; dur: number};
   objectPosition?: string;
@@ -35,7 +38,9 @@ export type CardScene =
 
 export type Scene = ClipScene | SplitScene | SlateScene | CardScene;
 
-export type Caption = {text: string; from: number; to: number};
+export type Caption = {text: string; from: number; to: number; label?: string};
+
+export type AudioTrack = {src: string; at: number; volume?: number};
 
 export type Beat = {
   id: number;
@@ -44,6 +49,8 @@ export type Beat = {
   duration: number;
   vo?: string;
   captions?: Caption[];
+  caption_bottom?: number;
+  audio?: AudioTrack[];
   scenes: Scene[];
   needs_operator?: string[];
 };
@@ -57,4 +64,4 @@ export type Edit = {
 };
 
 export const sceneDuration = (s: Scene): number =>
-  s.type === 'clip' ? s.out - s.in : s.duration;
+  s.type === 'clip' ? (s.out - s.in) / (s.rate ?? 1) : s.duration;

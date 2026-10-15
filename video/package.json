@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "studio": "remotion studio",
-    "render:preview": "remotion render src/index.ts Main renders/preview-v1.mp4 --concurrency=2"
+    "render:preview": "remotion render src/index.ts Main renders/preview-v1.mp4 --concurrency=2",
+    "render:final": "node tools/guard.mjs && remotion render src/index.ts Main renders/preview-v2.mp4 --concurrency=2"
   },
   "dependencies": {
     "@remotion/cli": "^4.0.535",
