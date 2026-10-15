@@ -1,0 +1,19 @@
+{
+  "suffix": "16:9, cinematic, no text, no letters, no logos, no watches, no smartwatches, no phones, no screens facing the camera",
+  "budget_usd": 8.0,
+  "draft_seconds": 5,
+  "shots": [
+    {"id": "AI1", "seconds": 3, "skip": true, "note": "exists (videos/ai/AI1.mp4, Gemini); never regenerate",
+     "prompt": "A student at a desk at night, lit by the glow of a laptop whose screen faces away from the camera, warm desk lamp, shallow depth of field, slow push-in, photorealistic."},
+    {"id": "AI2", "seconds": 3,
+     "prompt": "Close-up of handwritten study notes on paper slowly fading to blank, soft window light, macro."},
+    {"id": "AI3", "seconds": 4,
+     "prompt": "Macro of hexagonal honeycomb cells made of soft amber light, lighting up one by one on pure black, slow dolly forward, shallow depth of field."},
+    {"id": "AI4", "seconds": 3,
+     "prompt": "Extreme macro of light pulses travelling through a single glass optical fiber on black, glowing cyan, slow motion."},
+    {"id": "AI5", "seconds": 2,
+     "prompt": "Soft particles of warm light drifting together into one bright point on black, slow motion, minimal."},
+    {"id": "AI6", "seconds": 5,
+     "prompt": "Slow drift of out-of-focus amber bokeh on black, very subtle movement, minimal."}
+  ]
+}

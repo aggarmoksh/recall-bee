@@ -49,3 +49,6 @@ video/.venv/
 ggml-*.bin
 whisper.cpp/
 video/work/
+
+# AI shot generation log (spend + seeds), local only
+video/ai_log.jsonl
