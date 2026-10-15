@@ -9,7 +9,7 @@ Rules baked in: FAL_KEY comes from video/.env and is never printed or logged; AI
 the model's listed price and the running total first, and is refused if it would push the total past the budget;
 writes go only to videos/ai/ and videos/_review/; cost, model and seed are logged to ai_log.jsonl.
 """
-import argparse, json, os, pathlib, random, re, subprocess, sys, time, urllib.parse, urllib.request
+import argparse, json, os, pathlib, random, re, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 VIDEOS = ROOT.parent / 'videos'
@@ -57,8 +57,15 @@ def api_get(url, auth=True):
     req = urllib.request.Request(url)
     if auth:
         req.add_header('Authorization', f"Key {os.environ['FAL_KEY']}")
-    with urllib.request.urlopen(req, timeout=60) as r:
-        return json.loads(r.read())
+    for wait in (0, 6, 15, 30, 60):
+        time.sleep(wait)
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            if e.code != 429:
+                raise
+    raise RuntimeError('fal API rate limit (429) persisted; try again in a minute')
 
 
 def listed_price(endpoint_id):
@@ -85,7 +92,7 @@ def estimate(price, seconds):
 def discover():
     """Candidate text-to-video endpoints, Veo 3.1 Lite first, then LTX."""
     found = []
-    for q in ('veo3.1', 'veo 3.1', 'ltx'):
+    for q in ('veo3.1', 'ltx'):
         url = f"{API}/models?{urllib.parse.urlencode({'q': q, 'category': 'text-to-video', 'limit': 50})}"
         try:
             for m in api_get(url).get('models', []):
@@ -133,11 +140,13 @@ def pick_duration(props, want):
 
 
 def pick_resolution(props):
+    """Lowest tier that is still >= 1080p: the listed price is the base tier's, higher tiers may cost more."""
     p = props.get('resolution')
     if not p or 'enum' not in p:
         return None
     options = _nums(p['enum'])
-    return sorted(options)[-1][1] if options else p['enum'][-1]
+    ok = sorted(o for o in options if o[0] >= 1080)
+    return ok[0][1] if ok else (sorted(options)[-1][1] if options else p['enum'][-1])
 
 
 def build_args(props, prompt, want_seconds, seed):
@@ -150,6 +159,8 @@ def build_args(props, prompt, want_seconds, seed):
     r = pick_resolution(props)
     if r is not None:
         args['resolution'] = r
+    if 'fps' in props and 24 in (props['fps'].get('enum') or []):
+        args['fps'] = 24
     if 'generate_audio' in props:
         args['generate_audio'] = False
     if 'seed' in props:
@@ -177,33 +188,49 @@ def contact_sheet(clip, out):
 
 
 def generate_one(shot, endpoint, price, props, attempt):
-    import fal_client, urllib.request as ur
+    import fal_client
     sid = shot['id']
     if sid in PROTECTED or shot.get('skip'):
         raise SystemExit(f'{sid} is protected and is never generated')
-    secs = SHOTS['draft_seconds']
+    seed = random.randint(1, 2**31 - 1)
+    args = build_args(props, full_prompt(shot), SHOTS['draft_seconds'], seed)
+    secs = int(_nums([args['duration']])[0][0]) if 'duration' in args else SHOTS['draft_seconds']  # what the model bills, not what we asked for
     cost = estimate(price, secs)
     total = spent()
-    print(f'{sid}: model={endpoint} listed price=${price[0]}/{price[1]}  estimate=${cost:.2f}  running total=${total:.2f} / ${BUDGET:.2f}')
+    print(f'{sid}: model={endpoint} listed price=${price[0]}/{price[1]}  clip={secs}s  estimate=${cost:.2f}  running total=${total:.2f} / ${BUDGET:.2f}')
     check_budget(total, cost)
-    seed = random.randint(1, 2**31 - 1)
-    args = build_args(props, full_prompt(shot), secs, seed)
     result = fal_client.subscribe(endpoint, arguments=args)
     url = (result.get('video') or {}).get('url')
     if not url:
         raise RuntimeError(f'{sid}: no video url in the response')
+    finalize(sid, url, endpoint, args, secs, cost, result.get('seed', seed if 'seed' in args else None), attempt)
+
+
+def finalize(sid, url, endpoint, args, secs, cost, seed, attempt):
+    """Log the spend FIRST (it is billed the moment the generation succeeds), then download and make the contact sheet."""
+    import httpx
+    entry = {'ts': time.strftime('%Y-%m-%dT%H:%M:%S'), 'shot': sid, 'attempt': attempt, 'model': endpoint, 'seed': seed,
+             'seed_note': None if 'seed' in args else 'model has no seed input', 'cost_usd': round(cost, 4), 'seconds_billed': secs,
+             'args': {k: v for k, v in args.items() if k != 'prompt'}, 'file': f'{sid}_draft.mp4', 'url': url}
+    with LOG.open('a', encoding='utf-8') as f:
+        f.write(json.dumps(entry) + '\n')
     AI_DIR.mkdir(exist_ok=True)
     REVIEW_DIR.mkdir(exist_ok=True)
     dest = AI_DIR / f'{sid}_draft.mp4'
     if dest.exists():  # keep the rejected one for the record, never overwrite silently
         dest.rename(AI_DIR / f'{sid}_draft_rejected{attempt - 1}.mp4')
-    ur.urlretrieve(url, dest)
-    entry = {'ts': time.strftime('%Y-%m-%dT%H:%M:%S'), 'shot': sid, 'attempt': attempt, 'model': endpoint, 'seed': result.get('seed', seed),
-             'cost_usd': round(cost, 4), 'seconds_requested': secs, 'args': {k: v for k, v in args.items() if k != 'prompt'}, 'file': dest.name}
-    with LOG.open('a', encoding='utf-8') as f:
-        f.write(json.dumps(entry) + '\n')
+    with httpx.stream('GET', url, timeout=120, follow_redirects=True) as r:
+        r.raise_for_status()
+        with dest.open('wb') as f:
+            for chunk in r.iter_bytes():
+                f.write(chunk)
     contact_sheet(dest, REVIEW_DIR / f'ai_{sid}_draft.jpg')
     print(f'  saved {dest.name}; contact sheet videos/_review/ai_{sid}_draft.jpg; total now ${spent():.2f}')
+
+
+def suitable(props):
+    res = _nums(props.get('resolution', {}).get('enum', []))
+    return 'prompt' in props and 'duration' in props and 'aspect_ratio' in props and any(r[0] >= 1080 for r in res)
 
 
 def choose_model(forced):
@@ -212,24 +239,25 @@ def choose_model(forced):
         if not pr:
             sys.exit(f'{forced}: no listed price, refusing')
         return forced, pr
-    best = None
+    rows = []
     for eid, _meta in discover():
+        if 'text-to-video' not in eid:
+            continue
         try:
             pr = listed_price(eid)
-        except Exception:
-            continue
-        if not pr:
-            continue
-        try:
-            est = estimate(pr, SHOTS['draft_seconds'])
-        except ValueError:
-            continue
-        print(f'  candidate {eid}: ${pr[0]}/{pr[1]} -> ${est:.2f} per {SHOTS["draft_seconds"]} s clip')
-        if best is None:
-            best = (eid, pr, est)  # discover() is already ordered Veo 3.1 Lite first, then LTX
-    if not best:
-        sys.exit('no priced text-to-video candidate found: pass --model ENDPOINT_ID')
-    return best[0], best[1]
+            props = input_props(eid)
+            if not pr or not suitable(props):
+                continue
+            secs = int(_nums([pick_duration(props, SHOTS['draft_seconds'])])[0][0])
+            rows.append((estimate(pr, secs), eid, pr, secs))
+        except Exception as e:
+            print(f'  skipped {eid}: {type(e).__name__}', file=sys.stderr)
+    if not rows:
+        sys.exit('no suitable priced text-to-video candidate found: pass --model ENDPOINT_ID')
+    rows.sort()
+    for est, eid, pr, secs in rows:
+        print(f'  candidate {eid}: ${pr[0]}/{pr[1]} -> ${est:.2f} per {secs} s clip')
+    return rows[0][1], rows[0][2]
 
 
 def selftest():
@@ -249,6 +277,9 @@ def selftest():
     props = {'duration': {'enum': ['4s', '6s', '8s']}, 'resolution': {'enum': ['720p', '1080p']}, 'aspect_ratio': {}, 'generate_audio': {}, 'seed': {}}
     a = build_args(props, 'p', 5, 7)
     assert a == {'prompt': 'p', 'duration': '6s', 'aspect_ratio': '16:9', 'resolution': '1080p', 'generate_audio': False, 'seed': 7}, a
+    assert pick_resolution({'resolution': {'enum': ['1080p', '1440p', '2160p']}}) == '1080p'
+    assert build_args({'duration': {'enum': [6, 8]}, 'fps': {'enum': [24, 25]}}, 'p', 5, 1)['fps'] == 24
+    assert suitable({'prompt': {}, 'duration': {}, 'aspect_ratio': {}, 'resolution': {'enum': ['1080p']}}) and not suitable({'prompt': {}})
     assert pick_duration({'duration': {'type': 'integer'}}, 5) == 5
     assert full_prompt(SHOTS['shots'][1]).endswith('no screens facing the camera')
     assert [s['id'] for s in SHOTS['shots']] == ['AI1', 'AI2', 'AI3', 'AI4', 'AI5', 'AI6'] and SHOTS['shots'][0]['skip']
