@@ -130,6 +130,8 @@ At the end of every phase print exactly `Phase N complete. Consult advisor with:
 - When in doubt whether content is identifiable, ask rather than guess.
 - Gemini free tier may use prompts for product improvement. Document this in README privacy section.
 
+- D:\Bee has private history (real transcripts). Never add the GitHub remote to D:\Bee and never push from it. Publish only from D:\Bee-public.
+
 **Other**
 - Write surface is only facts and todos.
 - `alarm_at` is RFC3339 with timezone offset.
