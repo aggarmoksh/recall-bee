@@ -1,6 +1,6 @@
 import React from 'react';
 import {AbsoluteFill, OffthreadVideo, staticFile} from 'remotion';
-import {theme} from '../theme';
+import {GRADE, theme} from '../theme';
 
 // Plain rounded frame: no device branding, no notch, no buttons.
 export const PhoneFrame: React.FC<{src: string; startFrom: number; endAt: number; muted?: boolean}> = ({
@@ -26,7 +26,7 @@ export const PhoneFrame: React.FC<{src: string; startFrom: number; endAt: number
         startFrom={startFrom}
         endAt={endAt}
         muted={muted}
-        style={{width: '100%', height: '100%', objectFit: 'cover'}}
+        style={{width: '100%', height: '100%', objectFit: 'cover', filter: GRADE}}
       />
     </div>
   </AbsoluteFill>

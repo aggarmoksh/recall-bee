@@ -19,6 +19,7 @@
    "id": 1,
    "name": "Cold open",
    "start": 0.0,
+   "no_fade": true,
    "scenes": [
     {
      "type": "clip",
@@ -26,6 +27,7 @@
      "in": 6.9,
      "out": 10.4,
      "layout": "full",
+     "push": true,
      "label": {
       "text": "Real Bee data. Waits cut and timed.",
       "dur": 3.0
@@ -37,6 +39,7 @@
      "in": 52.0,
      "out": 57.0,
      "layout": "full",
+     "push": true,
      "chips": [
       {
        "text": "+44 s",
@@ -50,7 +53,8 @@
      "source": "A",
      "in": 68.3,
      "out": 74.8,
-     "layout": "full"
+     "layout": "full",
+     "push": true
     },
     {
      "type": "clip",
@@ -58,6 +62,7 @@
      "in": 127.0,
      "out": 132.0,
      "layout": "full",
+     "push": true,
      "chips": [
       {
        "text": "+48 s",
@@ -95,8 +100,8 @@
    ],
    "needs_operator": [
     "t1/t2 use the readable text on the watch as 'visible' (icon-first values: 42.5 s and 41.4 s)",
-    "Start-phrase caption shows what the audio says (\"Hey Bee, let's do a Recall session.\"); the brief's longer wording (\"...I'm ready for my questions\") is not in the recording",
-    "'What Bee heard' shows the first two phrases of the Q1 raw_text; the clip cuts before the rest ('the signal is pushed to the wire surface ...')",
+    "Start-phrase caption shows what the audio says (\"Hey Bee, let's do a Recall session.\"); the brief's longer wording is not in the recording",
+    "'What Bee heard' shows the first two phrases of the Q1 raw_text; the clip cuts before the rest",
     "The watch notification reads 'Lord Moksh' (your name in Bee's rewrite): keep or blur"
    ],
    "duration": 20.0,
@@ -110,7 +115,12 @@
      "type": "title",
      "duration": 4,
      "title": "Recall",
-     "sub": "Bee remembers what you heard. Recall makes sure you do."
+     "sub": "Bee remembers what you heard. Recall makes sure you do.",
+     "backdrop": {
+      "source": "AI3",
+      "in": 1.0,
+      "darken": 0.4
+     }
     }
    ],
    "duration": 4,
@@ -123,39 +133,73 @@
    "scenes": [
     {
      "type": "clip",
+     "source": "AI1",
+     "in": 2.0,
+     "out": 5.0,
+     "layout": "full",
+     "crop": {
+      "x": 366,
+      "y": 100,
+      "w": 914,
+      "h": 514,
+      "srcW": 1280,
+      "srcH": 720
+     },
+     "blurLeft": {
+      "to": 0.36,
+      "fade": 0.46
+     }
+    },
+    {
+     "type": "clip",
+     "source": "AI4",
+     "in": 1.5,
+     "out": 3.5,
+     "layout": "full"
+    },
+    {
+     "type": "clip",
      "source": "C",
      "in": 0.2,
-     "out": 5.94,
+     "out": 2.7,
      "layout": "scroll",
-     "rate": 0.41,
+     "rate": 0.5,
      "pan": {
       "from": 0.14,
       "to": 0.17
      }
+    },
+    {
+     "type": "clip",
+     "source": "AI2",
+     "in": 2.0,
+     "out": 6.0,
+     "layout": "full"
     }
    ],
-   "needs_operator": [
-    "AI1 not found (videos/ai/AI1.*): slot dropped, its 3 s went to C"
-   ],
-   "duration": 14.0,
-   "vo_placed": false,
    "captions": [
     {
      "text": "Bee hears everything I learn: lectures, study sessions, podcasts.",
      "from": 0.15,
-     "to": 5.52
+     "to": 4.85
     },
     {
      "text": "It can summarize them and remember them for me.",
-     "from": 5.52,
-     "to": 9.4
+     "from": 5.15,
+     "to": 9.85
     },
     {
      "text": "But in an interview, I'm the one who has to know it.",
-     "from": 9.4,
-     "to": 13.7
+     "from": 10.15,
+     "to": 13.85
     }
    ],
+   "needs_operator": [
+    "AI1: the shot is a 1.4x crop with the laptop-screen side blurred (no 2 s window is free of the player UI while the student is in frame)",
+    "Beat 3 captions are timed to the visuals (AI1 / C / AI2); with a real VO they are retimed to the audio"
+   ],
+   "duration": 14.0,
+   "vo_placed": false,
    "start": 24.0
   },
   {
@@ -163,8 +207,15 @@
    "name": "Loop",
    "scenes": [
     {
+     "type": "clip",
+     "source": "AI5",
+     "in": 4.0,
+     "out": 6.0,
+     "layout": "full"
+    },
+    {
      "type": "loop",
-     "duration": 14,
+     "duration": 12,
      "steps": [
       "Bee hears",
       "Questions",
@@ -175,7 +226,7 @@
      ]
     }
    ],
-   "duration": 14,
+   "duration": 14.0,
    "vo_placed": false,
    "captions": [
     {
@@ -205,7 +256,7 @@
      "duration": 22,
      "a": {
       "in": 230.0,
-      "objectPosition": "30% 50%"
+      "objectPosition": "34% 50%"
      },
      "b": {
       "in": 237.9
@@ -226,15 +277,64 @@
      "layout": "inset"
     },
     {
-     "type": "slate",
-     "id": "E answer page",
-     "duration": 12
+     "type": "still",
+     "duration": 12,
+     "src": "answer68.png",
+     "h": 1080,
+     "keys": [
+      {
+       "t": 0,
+       "cx": 960,
+       "cy": 270,
+       "z": 1.5
+      },
+      {
+       "t": 2.8,
+       "cx": 960,
+       "cy": 280,
+       "z": 1.55
+      },
+      {
+       "t": 3.6,
+       "cx": 716,
+       "cy": 452,
+       "z": 2.2
+      },
+      {
+       "t": 6.4,
+       "cx": 730,
+       "cy": 458,
+       "z": 2.2
+      },
+      {
+       "t": 7.2,
+       "cx": 1204,
+       "cy": 452,
+       "z": 2.2
+      },
+      {
+       "t": 9.2,
+       "cx": 1215,
+       "cy": 458,
+       "z": 2.2
+      },
+      {
+       "t": 10.0,
+       "cx": 960,
+       "cy": 672,
+       "z": 2.0
+      },
+      {
+       "t": 12,
+       "cx": 960,
+       "cy": 676,
+       "z": 2.0
+      }
+     ]
     }
    ],
    "needs_operator": [
-    "MISSING: the answer page for 'What two types of glass are needed in a fiber optic cable and why?' is not in E (the question appears only as a row in Today's answers). 12 s slot is a slate; the final render is blocked until it exists",
     "A/B sync offset estimated from DB alarm times, +-2 s",
-    "B footage is dimmed; brightened x1.65 in post",
     "A in the split uses a static crop (30% horizontal) and may clip the watch"
    ],
    "duration": 38.0,
@@ -333,20 +433,34 @@
      "source": "A",
      "in": 618.5,
      "out": 624.5,
-     "layout": "full"
+     "layout": "full",
+     "push": true
     },
     {
-     "type": "clip",
-     "source": "E",
-     "in": 21.0,
-     "out": 26.0,
-     "layout": "full",
-     "zoom": {
-      "from": 1.0,
-      "to": 1.3,
-      "ox": "22%",
-      "oy": "26%"
-     }
+     "type": "still",
+     "duration": 5,
+     "src": "progress.png",
+     "h": 1592,
+     "keys": [
+      {
+       "t": 0,
+       "cx": 880,
+       "cy": 300,
+       "z": 2.0
+      },
+      {
+       "t": 2.2,
+       "cx": 870,
+       "cy": 390,
+       "z": 2.4
+      },
+      {
+       "t": 5,
+       "cx": 1030,
+       "cy": 395,
+       "z": 2.4
+      }
+     ]
     }
    ],
    "needs_operator": [
@@ -373,34 +487,61 @@
    "name": "Privacy",
    "scenes": [
     {
-     "type": "clip",
-     "source": "E",
-     "in": 39.5,
-     "out": 45.0,
-     "layout": "full",
-     "zoom": {
-      "from": 1.0,
-      "to": 1.3,
-      "ox": "30%",
-      "oy": "30%"
-     }
+     "type": "still",
+     "duration": 5.5,
+     "src": "privacy.png",
+     "h": 1097,
+     "keys": [
+      {
+       "t": 0,
+       "cx": 960,
+       "cy": 300,
+       "z": 1.6
+      },
+      {
+       "t": 2.4,
+       "cx": 960,
+       "cy": 330,
+       "z": 1.7
+      },
+      {
+       "t": 3.3,
+       "cx": 960,
+       "cy": 640,
+       "z": 1.8
+      },
+      {
+       "t": 5.5,
+       "cx": 960,
+       "cy": 700,
+       "z": 1.8
+      }
+     ]
     },
     {
-     "type": "clip",
-     "source": "E",
-     "in": 29.5,
-     "out": 35.0,
-     "layout": "full",
-     "zoom": {
-      "from": 1.0,
-      "to": 1.3,
-      "ox": "20%",
-      "oy": "28%"
-     }
+     "type": "still",
+     "duration": 5.5,
+     "src": "sessions_top.png",
+     "h": 800,
+     "keys": [
+      {
+       "t": 0,
+       "cx": 960,
+       "cy": 300,
+       "z": 2.0
+      },
+      {
+       "t": 5.5,
+       "cx": 960,
+       "cy": 340,
+       "z": 2.0
+      }
+     ]
     }
    ],
    "needs_operator": [
-    "Dashboard body text stays below 40 px even zoomed; only headings and numbers (13, 4) reach 40 px"
+    "Sessions still is cropped to the top rows; a lower row names a speaker (public lecture) and is kept out of the file entirely",
+    "Dashboard row text (scores, session descriptions) stays under 40 px even zoomed; headings, numbers and rule text reach 40 px"
    ],
    "duration": 11.0,
    "vo_placed": false,
@@ -435,7 +576,12 @@
      "type": "end",
      "duration": 4,
      "url": "[repo URL placeholder]",
-     "line": "Bee remembers what you heard. Recall makes sure you do."
+     "line": "",
+     "backdrop": {
+      "source": "AI6",
+      "in": 1.0,
+      "darken": 0.55
+     }
     }
    ],
    "needs_operator": [

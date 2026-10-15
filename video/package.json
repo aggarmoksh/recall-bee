@@ -12,6 +12,7 @@
     "@remotion/google-fonts": "^4.0.535",
     "@remotion/install-whisper-cpp": "^4.0.535",
     "@remotion/media-utils": "^4.0.535",
+    "puppeteer-core": "^25.14.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "remotion": "^4.0.535"

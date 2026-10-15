@@ -1,20 +1,21 @@
-"""Builds src/edit.json (V2). Run from video/: python tools/make_edit.py
+"""Builds src/edit.json (V3). Run from video/: python tools/make_edit.py
 
 Measured values live in tools/measured.json. Captions are authored in whole phrases (never broken mid-phrase)
 and timed in proportion to character count over the beat (or over the VO audio when videos/vo/beatNN.* exists).
+Music is added only when videos/music/track.* exists; AI audio is never used.
 """
-import json, pathlib, subprocess, glob, sys
+import glob, json, os, pathlib, subprocess
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 M = json.loads((ROOT / 'tools' / 'measured.json').read_text())
 FPS = 30
-import os
 VO_DIR = pathlib.Path(os.environ['RECALL_VO_DIR']) if os.environ.get('RECALL_VO_DIR') else ROOT.parent / 'videos' / 'vo'
+MUSIC_DIR = pathlib.Path(os.environ['RECALL_MUSIC_DIR']) if os.environ.get('RECALL_MUSIC_DIR') else ROOT.parent / 'videos' / 'music'
 MAX_TOTAL = 170.0
 
 
 def clip(source, tin, tout, layout='full', **kw):
-    d = {'type': 'clip', 'source': source, 'in': round(tin, 2), 'out': round(tout, 2), 'layout': layout}
+    d = {'type': 'clip', 'source': source, 'in': round(tin, 3), 'out': round(tout, 3), 'layout': layout}
     d.update(kw)
     return d
 
@@ -23,7 +24,7 @@ def sdur(s):
     return ((s['out'] - s['in']) / s.get('rate', 1)) if s['type'] == 'clip' else s['duration']
 
 
-# ---- voiceover scripts, authored as phrases (a caption is one or more whole phrases) ----
+# ---- voiceover scripts, authored as phrases (a caption is one or more whole phrases; "||" forces a caption break) ----
 PHRASES = {
     3: ["Bee hears everything I learn:", "lectures, study sessions, podcasts.", "It can summarize them and remember them for me.",
         "But in an interview,", "I'm the one who has to know it."],
@@ -117,50 +118,55 @@ def vo_info(n):
 
 def finish_beat(b, n):
     """Apply VO if present: beat length = max(visual, VO + 0.6), extra time goes to the last scene."""
-    vis = sum(sdur(s) for s in b['scenes'])
+    vis = round(sum(sdur(s) for s in b['scenes']), 3)
     vo = vo_info(n) if n in PHRASES else None
-    vis = round(vis, 3)
     b['duration'] = vis
     b['vo_placed'] = bool(vo)
     if vo:
-        need = vo['dur'] + 0.6
+        need = round(vo['dur'] + 0.6, 3)
         if need > vis:
             extra = need - vis
             last = b['scenes'][-1]
-            if last['type'] == 'clip':
+            if last['type'] == 'clip' and last['source'].startswith('AI'):
+                last['in'] = round(max(0.0, last['in'] - extra), 3)  # AI shots end on their last frames: lengthen at the start
+            elif last['type'] == 'clip':
                 last['out'] = round(last['out'] + extra * last.get('rate', 1), 3)
             else:
-                last['duration'] = round(last['duration'] + extra, 2)
+                last['duration'] = round(last['duration'] + extra, 3)
+                if last['type'] == 'still':
+                    last['keys'][-1]['t'] = last['duration']
             b['duration'] = need
         b['audio'] = b.get('audio', []) + [{'src': vo['file'], 'at': 0.0}]
         b['captions'] = caption_track(n, 0.15, vo['dur'])
-    elif n in PHRASES:
+    elif n in PHRASES and 'captions' not in b:
         b['captions'] = caption_track(n, 0.15, b['duration'] - 0.3)
     return b
 
 
 c = M['cold']
-E = M['E']
 sp = M['split']
+S = M['stills']
+have_stills = all((ROOT / 'proxies' / f).exists() for f in ('answer68.png', 'progress.png', 'privacy.png', 'sessions_top.png'))
 NUDGE = "Recall: 6 questions are buzzing for you. Say Hey Bee, let's do a Recall session when you can talk."
 beats = []
 
-# 1. Cold open: A only; live audio replaced by the denoised, -16 LUFS track (tools/cold_audio.py)
+# 1. Cold open: A only; live audio replaced by the denoised, -16 LUFS track (tools/cold_audio.py).
+#    Hard cuts, slow push-in on each wrist shot.
 t_phrase = c['phrase_out'] - c['phrase_in']
 t_q1 = c['q1_out'] - c['q1_in']
 cold = {
-    'id': 1, 'name': 'Cold open', 'start': 0,
+    'id': 1, 'name': 'Cold open', 'start': 0, 'no_fade': True,
     'scenes': [
-        clip('A', c['phrase_in'], c['phrase_out'], label={'text': 'Real Bee data. Waits cut and timed.', 'dur': 3.0}),
-        clip('A', c['q1_in'], c['q1_out'], chips=[{'text': f"+{M['t1']:.0f} s", 'at': 0.1, 'dur': 1.5}]),
-        clip('A', c['ans_in'], c['ans_out']),
-        clip('A', c['fb_in'], c['fb_out'], chips=[{'text': f"+{M['t2']:.0f} s", 'at': 0.1, 'dur': 1.5}]),
+        clip('A', c['phrase_in'], c['phrase_out'], push=True, label={'text': 'Real Bee data. Waits cut and timed.', 'dur': 3.0}),
+        clip('A', c['q1_in'], c['q1_out'], push=True, chips=[{'text': f"+{M['t1']:.0f} s", 'at': 0.1, 'dur': 1.5}]),
+        clip('A', c['ans_in'], c['ans_out'], push=True),
+        clip('A', c['fb_in'], c['fb_out'], push=True, chips=[{'text': f"+{M['t2']:.0f} s", 'at': 0.1, 'dur': 1.5}]),
     ],
     'audio': [{'src': 'cold_audio.wav', 'at': 0.0}],
     'caption_bottom': 170,
 }
-a0 = t_phrase + t_q1  # beat-relative start of the answer clip
-speech_on = 68.35 - c['ans_in']  # answer speech starts this far into the clip
+a0 = t_phrase + t_q1
+speech_on = 68.35 - c['ans_in']
 mid = a0 + speech_on + (c['ans_out'] - 68.35) / 2
 cold['captions'] = [
     {'text': "Hey Bee, let's do a Recall session.", 'from': 0.75, 'to': 3.3},
@@ -169,32 +175,52 @@ cold['captions'] = [
 ]
 cold['needs_operator'] = [
     "t1/t2 use the readable text on the watch as 'visible' (icon-first values: 42.5 s and 41.4 s)",
-    "Start-phrase caption shows what the audio says (\"Hey Bee, let's do a Recall session.\"); the brief's longer wording (\"...I'm ready for my questions\") is not in the recording",
-    "'What Bee heard' shows the first two phrases of the Q1 raw_text; the clip cuts before the rest ('the signal is pushed to the wire surface ...')",
+    "Start-phrase caption shows what the audio says (\"Hey Bee, let's do a Recall session.\"); the brief's longer wording is not in the recording",
+    "'What Bee heard' shows the first two phrases of the Q1 raw_text; the clip cuts before the rest",
     "The watch notification reads 'Lord Moksh' (your name in Bee's rewrite): keep or blur",
 ]
 beats.append(finish_beat(cold, 1))
 
-title = {'id': 2, 'name': 'Title', 'scenes': [{'type': 'title', 'duration': 4, 'title': 'Recall', 'sub': 'Bee remembers what you heard. Recall makes sure you do.'}]}
-beats.append(finish_beat(title, 2))
+# 2. Title over AI3 (honeycomb), darkened 40%
+beats.append(finish_beat({'id': 2, 'name': 'Title', 'scenes': [
+    {'type': 'title', 'duration': 4, 'title': 'Recall', 'sub': 'Bee remembers what you heard. Recall makes sure you do.',
+     'backdrop': {'source': 'AI3', 'in': 1.0, 'darken': 0.4}}]}, 2))
 
-# 3. C large, cropped to the top of the Bee summary with a slow scroll. No AI1 file exists, so its 3 s go to C.
+# 3. AI1 (3 s, screen cropped and blurred) -> AI4 (2 s) -> C (5 s, large crop) -> AI2 (4 s, ends on the blank page).
+ai1 = M['AI1']
 beats.append(finish_beat({'id': 3, 'name': 'Problem', 'scenes': [
-    clip('C', M['C']['in'], M['C']['in'] + round(14 * M['C']['rate'], 3), layout='scroll', rate=M['C']['rate'], pan={'from': M['C']['pan'][0], 'to': M['C']['pan'][1]})],
-    'needs_operator': ['AI1 not found (videos/ai/AI1.*): slot dropped, its 3 s went to C']}, 3))
+    clip('AI1', ai1['in'], ai1['in'] + 3, crop=ai1['crop'], blurLeft=ai1['blur']),
+    clip('AI4', M['AI4']['in'], M['AI4']['in'] + 2),
+    clip('C', M['C']['in'], M['C']['in'] + round(5 * M['C']['rate'], 3), layout='scroll', rate=M['C']['rate'],
+         pan={'from': M['C']['pan'][0], 'to': M['C']['pan'][1]}),
+    clip('AI2', M['AI2']['in'], M['AI2']['in'] + 4),
+],
+    'captions': [
+        {'text': 'Bee hears everything I learn: lectures, study sessions, podcasts.', 'from': 0.15, 'to': 4.85},
+        {'text': 'It can summarize them and remember them for me.', 'from': 5.15, 'to': 9.85},
+        {'text': "But in an interview, I'm the one who has to know it.", 'from': 10.15, 'to': 13.85},
+    ],
+    'needs_operator': [
+        'AI1: the shot is a 1.4x crop with the laptop-screen side blurred (no 2 s window is free of the player UI while the student is in frame)',
+        'Beat 3 captions are timed to the visuals (AI1 / C / AI2); with a real VO they are retimed to the audio']}, 3))
 
+# 4. AI5 lead-in (2 s), then the loop card
 beats.append(finish_beat({'id': 4, 'name': 'Loop', 'scenes': [
-    {'type': 'loop', 'duration': 14, 'steps': ['Bee hears', 'Questions', 'Your watch', 'Your voice', 'Graded', 'Next review']}]}, 4))
+    clip('AI5', M['AI5']['in'], M['AI5']['in'] + 2),
+    {'type': 'loop', 'duration': 12, 'steps': ['Bee hears', 'Questions', 'Your watch', 'Your voice', 'Graded', 'Next review']}]}, 4))
 
+# 5. split (A+B), D inset, then the answer page still (E clip only as a fallback if the still is missing)
+if have_stills:
+    answer = {'type': 'still', 'duration': 12, 'src': S['answer68']['file'], 'h': S['answer68']['h'], 'keys': S['answer68']['keys']}
+else:
+    answer = clip('E', M['E']['progress'][0], M['E']['progress'][0] + 12, layout='full')
 beats.append(finish_beat({'id': 5, 'name': 'How it works', 'scenes': [
     {'type': 'split', 'duration': 22, 'a': {'in': sp['a_in'], 'objectPosition': sp['a_pos']}, 'b': {'in': sp['b_in']}},
     clip('D', M['D']['q_in'], M['D']['q_in'] + 2, layout='inset'),
     clip('D', M['D']['cap_in'], M['D']['cap_in'] + 2, layout='inset'),
-    {'type': 'slate', 'id': 'E answer page', 'duration': 12},
+    answer,
 ], 'needs_operator': [
-    "MISSING: the answer page for 'What two types of glass are needed in a fiber optic cable and why?' is not in E (the question appears only as a row in Today's answers). 12 s slot is a slate; the final render is blocked until it exists",
     f"A/B sync offset estimated from DB alarm times, +-{M['B_offset_err']} s",
-    'B footage is dimmed; brightened x1.65 in post',
     'A in the split uses a static crop (30% horizontal) and may clip the watch']}, 5))
 
 beats.append(finish_beat({'id': 6, 'name': 'Why waits', 'scenes': [
@@ -203,19 +229,30 @@ beats.append(finish_beat({'id': 6, 'name': 'Why waits', 'scenes': [
     clip('B', M['B_goal_in'], M['B_goal_in'] + 9, layout='full'),
 ], 'needs_operator': ['Nudge N shown as 6; stings.py fills in the real due count']}, 6))
 
+
+def still(name, dur):
+    st = S[name]
+    return {'type': 'still', 'duration': dur, 'src': st['file'], 'h': st['h'], 'keys': st['keys']}
+
+
+if have_stills:
+    prog, priv, sess = still('progress', 5), still('privacy', 5.5), still('sessions', 5.5)
+else:
+    prog = clip('E', *M['E']['progress'], layout='full')
+    priv = clip('E', *M['E']['privacy'], layout='full')
+    sess = clip('E', *M['E']['sessions'], layout='full')
 beats.append(finish_beat({'id': 7, 'name': 'Results', 'scenes': [
-    clip('A', M['report_in'], M['report_in'] + 6, layout='full'),
-    clip('E', E['progress'][0], E['progress'][1], layout='full', zoom={'from': 1.0, 'to': 1.3, 'ox': '22%', 'oy': '26%'}),
-], 'needs_operator': ['VO says "first two real sessions ... twelve questions": DB sessions 7 and 8 are 6/6 each']}, 7))
+    clip('A', M['report_in'], M['report_in'] + 6, layout='full', push=True), prog],
+    'needs_operator': ['VO says "first two real sessions ... twelve questions": DB sessions 7 and 8 are 6/6 each']}, 7))
+beats.append(finish_beat({'id': 8, 'name': 'Privacy', 'scenes': [priv, sess],
+    'needs_operator': ['Sessions still is cropped to the top rows; a lower row names a speaker (public lecture) and is kept out of the file entirely',
+                       'Dashboard row text (scores, session descriptions) stays under 40 px even zoomed; headings, numbers and rule text reach 40 px']}, 8))
 
-beats.append(finish_beat({'id': 8, 'name': 'Privacy', 'scenes': [
-    clip('E', E['privacy'][0], E['privacy'][1], layout='full', zoom={'from': 1.0, 'to': 1.3, 'ox': '30%', 'oy': '30%'}),
-    clip('E', E['sessions'][0], E['sessions'][1], layout='full', zoom={'from': 1.0, 'to': 1.3, 'ox': '20%', 'oy': '28%'}),
-], 'needs_operator': ['Dashboard body text stays below 40 px even zoomed; only headings and numbers (13, 4) reach 40 px']}, 8))
-
+# 10. Architecture, then the end card over AI6 (darkened)
 beats.append(finish_beat({'id': 10, 'name': 'Architecture + end', 'scenes': [
     {'type': 'arch', 'duration': 8},
-    {'type': 'end', 'duration': 4, 'url': '[repo URL placeholder]', 'line': 'Bee remembers what you heard. Recall makes sure you do.'},
+    {'type': 'end', 'duration': 4, 'url': '[repo URL placeholder]', 'line': '',
+     'backdrop': {'source': 'AI6', 'in': 1.0, 'darken': 0.55}},
 ], 'needs_operator': ['Repo URL placeholder']}, 10))
 
 t = 0.0
@@ -226,7 +263,24 @@ for b in beats:
 total = round(t, 2)
 assert total < MAX_TOTAL, f'total {total}s exceeds {MAX_TOTAL}s'
 
+# Music: only if videos/music/track.* exists. Starts at the title (never under the cold open), -30 LUFS, ducked 8 dB under VO, 2 s fades.
+music = None
+mfiles = sorted(glob.glob(str(MUSIC_DIR / 'track.*')))
+if mfiles:
+    mout = ROOT / 'proxies' / 'music.wav'
+    subprocess.run(['ffmpeg', '-y', '-v', 'error', '-i', mfiles[0], '-af', 'loudnorm=I=-30:TP=-3:LRA=11', '-ar', '48000', '-ac', '2', str(mout)], check=True)
+    title_start = next(b['start'] for b in beats if b['id'] == 2)
+    duck = []
+    for b in beats:
+        for a in b.get('audio', []):
+            if a['src'].startswith('vo_'):
+                r = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', str(ROOT / 'proxies' / a['src'])], capture_output=True, text=True)
+                duck.append({'from': round(b['start'] + a['at'], 2), 'to': round(b['start'] + a['at'] + float(r.stdout.strip()), 2)})
+    music = {'src': 'music.wav', 'start': title_start, 'end': total, 'duck': duck}
+
 out = {'fps': FPS, 'width': 1920, 'height': 1080,
        'measured': {k: v for k, v in M.items() if not isinstance(v, (dict, list))}, 'beats': beats}
+if music:
+    out['music'] = music
 (ROOT / 'src' / 'edit.json').write_text(json.dumps(out, indent=1))
-print(f'edit.json written; total {total}s;', 'VO placed: ' + (', '.join(str(b['id']) for b in beats if b.get('vo_placed')) or 'none (caption-only)'))
+print(f'edit.json written; total {total}s;', 'VO placed: ' + (', '.join(str(b['id']) for b in beats if b.get('vo_placed')) or 'none (caption-only)'), '| music:', 'yes' if music else 'no')

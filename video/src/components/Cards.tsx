@@ -4,10 +4,10 @@ import {theme} from '../theme';
 
 // Readability rules (V2): nothing that must be read is below 40 px, titles are 96 px or more.
 
-const Base: React.FC<{children: React.ReactNode}> = ({children}) => (
+const Base: React.FC<{children: React.ReactNode; transparent?: boolean}> = ({children, transparent}) => (
   <AbsoluteFill
     style={{
-      background: theme.bg,
+      background: transparent ? 'transparent' : theme.bg,
       fontFamily: theme.font,
       color: theme.text,
       justifyContent: 'center',
@@ -23,14 +23,14 @@ const useFade = (inFrames = 10) => {
   return interpolate(frame, [0, inFrames], [0, 1], {extrapolateRight: 'clamp'});
 };
 
-export const TitleCard: React.FC<{title: string; sub: string}> = ({title, sub}) => {
+export const TitleCard: React.FC<{title: string; sub: string; transparent?: boolean}> = ({title, sub, transparent}) => {
   const o = useFade();
   const frame = useCurrentFrame();
   const {fps} = useVideoConfig();
   const s = spring({frame, fps, config: {damping: 200}});
   return (
-    <Base>
-      <div style={{opacity: o, textAlign: 'center', transform: `scale(${0.96 + 0.04 * s})`}}>
+    <Base transparent={transparent}>
+      <div style={{opacity: o, textAlign: 'center', transform: `scale(${0.96 + 0.04 * s})`, textShadow: transparent ? '0 4px 30px rgba(0,0,0,0.65)' : undefined}}>
         <div style={{fontSize: 220, fontWeight: 800, letterSpacing: -7, color: theme.accent}}>{title}</div>
         <div style={{fontSize: 56, fontWeight: 500, marginTop: 10, color: theme.text}}>{sub}</div>
       </div>
@@ -77,7 +77,7 @@ export const LoopCard: React.FC<{steps: string[]; duration: number}> = ({steps, 
                   style={{
                     fontSize: 56,
                     fontWeight: 800,
-                    color: theme.accent,
+                    color: theme.lavender,
                     opacity: on ? o : 0.12,
                   }}
                 >
@@ -156,9 +156,9 @@ export const ArchitectureCard: React.FC = () => {
     <Base>
       <div style={{opacity: o, display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: 1840}}>
         <Box title="Bee CLI" line="transcripts + todos" height={300} />
-        <div style={{fontSize: 80, fontWeight: 800, color: theme.accent}}>{'↔'}</div>
+        <div style={{fontSize: 80, fontWeight: 800, color: theme.lavender}}>{'↔'}</div>
         <Box title="Recall daemon" line="FastAPI, SQLite, SM-2" accent height={300} />
-        <div style={{fontSize: 80, fontWeight: 800, color: theme.accent}}>{'↔'}</div>
+        <div style={{fontSize: 80, fontWeight: 800, color: theme.lavender}}>{'↔'}</div>
         <div style={{display: 'flex', flexDirection: 'column', gap: 40}}>
           <Box title="Amazon Bedrock" line="Claude Haiku 4.5" height={200} />
           <Box title="Next.js dashboard" line="read-only view" height={200} />
@@ -168,14 +168,14 @@ export const ArchitectureCard: React.FC = () => {
   );
 };
 
-export const EndCard: React.FC<{url: string; line: string}> = ({url, line}) => {
+export const EndCard: React.FC<{url: string; line: string; transparent?: boolean}> = ({url, line, transparent}) => {
   const o = useFade();
   return (
-    <Base>
-      <div style={{opacity: o, textAlign: 'center'}}>
+    <Base transparent={transparent}>
+      <div style={{opacity: o, textAlign: 'center', textShadow: transparent ? '0 4px 30px rgba(0,0,0,0.65)' : undefined}}>
         <div style={{fontSize: 200, fontWeight: 800, color: theme.accent, letterSpacing: -6}}>Recall</div>
-        <div style={{fontSize: 54, marginTop: 6}}>{line}</div>
-        <div style={{fontSize: 46, marginTop: 44, color: theme.muted}}>{url}</div>
+        {line && <div style={{fontSize: 54, marginTop: 6}}>{line}</div>}
+        <div style={{fontSize: 46, marginTop: line ? 44 : 30, color: theme.muted}}>{url}</div>
       </div>
     </Base>
   );
