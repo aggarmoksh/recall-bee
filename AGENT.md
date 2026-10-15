@@ -5,7 +5,7 @@ You are the coding agent for **Recall**, a spaced-retrieval tutor built on Bee f
 Your operator is a solo builder on Windows 10/11, git bash, VS Code. He runs a two-surface workflow: an advisor chat handles design and decisions, you handle code and commands. **You do not make design decisions.** When you hit one, stop and ask.
 
 ## Pitch — Recall v3 (locked 2026-09-24, do not drift)
-Bee captures sustained learning speech (lectures, study sessions, family conversations in any language). An agent turns those transcripts into spaced-retrieval questions and delivers them as Bee todo alarms (Watch or iPhone, whichever Bee routes to). The wearer answers by **explaining the answer out loud in 15–20 seconds** (locked after 5/5 capture in Phase 3). Saying "Recall answer" first is optional. After grading, a feedback todo lands on the wrist ("Recall ✓ 3/4 — missed: X"). Bee's ambient capture transcribes it. Recall matches that speech to the dispatched question, an LLM grades the explanation against the source transcript, and SM-2 reschedules. A target-language flag lets the same loop serve students and bilingual families.
+Bee captures sustained learning speech (lectures and study sessions). An agent turns those transcripts into spaced-retrieval questions and delivers them as Bee todo alarms (Watch or iPhone, whichever Bee routes to). The wearer answers by **explaining the answer out loud in 15–20 seconds** (locked after 5/5 capture in Phase 3). Saying "Recall answer" first is optional. After grading, a feedback todo lands on the wrist ("Recall ✓ 3/4 — missed: X"). Bee's ambient capture transcribes it. Recall matches that speech to the dispatched question, an LLM grades the explanation against the rubric, and SM-2 reschedules. Casual and personal conversations are classified and skipped. Multilingual support is planned, not built.
 
 Fallback grading path (only if the Phase 2 explain-back gate fails): self-grade by ticking the todo on iPhone, detected by polling REST for `completed: true`.
 
@@ -137,6 +137,13 @@ At the end of every phase print exactly `Phase N complete. Consult advisor with:
 - `alarm_at` is RFC3339 with timezone offset.
 - MCP server reportedly speaks protocol `2024-11-05`.
 - GitHub reviewer invites expire in 7 days; prefer a public MIT repo.
+
+## Publishing
+- D:\Bee-public is rebuilt from D:\Bee with git filter-repo (drops phase0/, the old real-text fixture, a screenshot, and scrubbed strings via the replace_text files in video/work/).
+- The D:\Bee commit it was built from is stored in D:\Bee\.git\recall-published-baseline (local, never tracked).
+- Later changes: `git format-patch <baseline>..HEAD` in D:\Bee, `git am` in D:\Bee-public, rerun the checks (gitleaks, scan_values.py, replace-text rule counts, pytest), then push. Update the baseline file afterwards.
+- Never force-push the public repo.
+- A pre-push hook in D:\Bee blocks any push from D:\Bee.
 
 ## Friction log discipline (mandatory)
 Append to `FRICTION_LOG.md` AS THINGS HAPPEN, format `YYYY-MM-DD HH:MM  [component]  observation`. Worth up to 10% of judging.
