@@ -67,7 +67,7 @@ export type Beat = {
   needs_operator?: string[];
 };
 
-export type Music = {src: string; start: number; end: number; duck: {from: number; to: number}[]; skip?: number};
+export type Music = {src: string; start: number; end: number; duck: {from: number; to: number}[]; skip?: number; duck_db?: number};
 
 export type Edit = {
   music?: Music;

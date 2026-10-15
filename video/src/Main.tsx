@@ -231,7 +231,8 @@ const BeatView: React.FC<{beat: Beat; fps: number}> = ({beat, fps}) => {
 };
 
 const MusicBed: React.FC<{m: NonNullable<Edit['music']>; fps: number}> = ({m, fps}) => {
-  const DUCK = 0.398; // -8 dB under the voiceover
+  const DUCK = Math.pow(10, -(m.duck_db ?? 6) / 20); // dip under the voiceover
+  const RAMP = 0.6;
   const volume = (f: number) => {
     const t = m.start + f / fps;
     const fade = Math.min(
@@ -240,7 +241,7 @@ const MusicBed: React.FC<{m: NonNullable<Edit['music']>; fps: number}> = ({m, fp
     );
     let g = 1;
     for (const r of m.duck) {
-      g = Math.min(g, interpolate(t, [r.from - 0.3, r.from, r.to, r.to + 0.3], [1, DUCK, DUCK, 1], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'}));
+      g = Math.min(g, interpolate(t, [r.from - RAMP, r.from, r.to, r.to + RAMP], [1, DUCK, DUCK, 1], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'}));
     }
     return fade * g;
   };

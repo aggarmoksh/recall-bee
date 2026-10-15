@@ -19,9 +19,9 @@ AT = 0.25  # VO starts this long after its beat starts (lets the fade-in finish)
 VO_DIR = pathlib.Path(os.environ['RECALL_VO_DIR']) if os.environ.get('RECALL_VO_DIR') else ROOT.parent / 'videos' / 'vo'
 MUSIC_FILE = ROOT / 'proxies' / 'music.mp3'
 VO_LUFS = -14.0  # raised from -16 after the review (the VO read as low)
-MUSIC_LUFS = VO_LUFS - 18  # music sits 18 dB below the VO
-MUSIC_SKIP = 9.0  # the track's first seconds are near-silent; start 9 s into the song
-DUCK_DB = 8
+MUSIC_LUFS = VO_LUFS - 8  # music bed sits 8 dB below the VO (V4.1: was 18, which was inaudible)
+MUSIC_SKIP = 16.4  # V4.1: the bed starts where the track is already at its steady level (9.0 started 11.5 dB below it)
+DUCK_DB = 6  # extra dip under the VO
 MAX_TOTAL = 170.0
 REPO_URL = os.environ.get('REPO_URL') or CONFIG.get('REPO_URL') or '[repo URL placeholder]'  # single source: video/config.json
 
@@ -302,7 +302,7 @@ L10 = beat_len(10, 12)
 t10 = ph(10, 2)[0] - 0.1
 beats.append(finish_beat({'id': 10, 'name': 'Architecture + end', 'scenes': [
     {'type': 'arch', 'duration': round(t10, 3)},
-    {'type': 'end', 'duration': round(L10 - t10, 3), 'url': REPO_URL, 'line': '',
+    {'type': 'end', 'duration': round(L10 - t10, 3), 'url': re.sub(r'^https?://', '', REPO_URL), 'line': '',
      'backdrop': {'source': 'AI6', 'in': 1.0, 'darken': 0.55}},
 ], 'needs_operator': ['Repo URL is a placeholder until REPO_URL is set (video/config.json)' if REPO_URL.startswith('[') else 'Repo URL from config']}, 10))
 
@@ -332,7 +332,7 @@ if MUSIC_FILE.exists():
             if a['src'].startswith('vo_'):
                 r = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', str(ROOT / 'proxies' / a['src'])], capture_output=True, text=True)
                 duck.append({'from': round(b['start'] + a['at'], 2), 'to': round(b['start'] + a['at'] + float(r.stdout.strip()), 2)})
-    music = {'src': 'music.wav', 'start': title_start, 'end': total, 'duck': duck, 'skip': MUSIC_SKIP}
+    music = {'src': 'music.wav', 'start': title_start, 'end': total, 'duck': duck, 'skip': MUSIC_SKIP, 'duck_db': DUCK_DB}
 
 out = {'fps': FPS, 'width': 1920, 'height': 1080,
        'measured': {k: v for k, v in M.items() if not isinstance(v, (dict, list))}, 'beats': beats}

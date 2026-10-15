@@ -635,7 +635,7 @@
     {
      "type": "end",
      "duration": 5.521,
-     "url": "[repo URL placeholder]",
+     "url": "github.com/aggarmoksh/recall-bee",
      "line": "",
      "backdrop": {
       "source": "AI6",
@@ -645,7 +645,7 @@
     }
    ],
    "needs_operator": [
-    "Repo URL is a placeholder until REPO_URL is set (video/config.json)"
+    "Repo URL from config"
    ],
    "duration": 13.164,
    "vo_placed": true,
@@ -704,6 +704,7 @@
     "to": 157.41
    }
   ],
-  "skip": 9.0
+  "skip": 16.4,
+  "duck_db": 6
  }
 }
