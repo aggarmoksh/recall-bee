@@ -5,6 +5,7 @@
 Recall turns the learning sessions your Bee wearable captures into spaced-retrieval quizzes. Questions arrive as Bee todo alarms on your wrist, you answer out loud, and Recall grades what Bee heard and schedules the next review.
 
 Status: working prototype, built for the Amazon Developer Hackathon 2026 (Bee track). Developed and tested on Windows 11.
+Demo Video : https://youtu.be/sL0tVlvPoSE
 
 ## What it does
 
